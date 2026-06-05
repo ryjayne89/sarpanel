@@ -1,0 +1,26 @@
+# Reproducible environment for sar2parquet.
+#
+# Create it with:
+#     conda env create -f environment.yml
+#     conda activate sar2parquet
+#     pip install -e .
+#
+# Note: the geocoding step also requires ESA SNAP to be installed separately
+# (https://step.esa.int/main/download/snap-download/) with its `gpt` tool on PATH.
+name: sar2parquet
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - pyarrow
+  - geopandas
+  - shapely
+  - rasterio
+  - requests
+  - jupyterlab
+  - pip
+  - pip:
+      - asf_search
+      - pyroSAR
