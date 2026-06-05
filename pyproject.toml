@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sar2parquet"
+version = "0.1.0"
+description = "Turn farm-field polygons into analysis-ready Sentinel-1 SAR data in Parquet, using ASF Search and pyroSAR."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Dev Jyoti Ghosh Arnab" },
+    { name = "Ryan Jayne" },
+]
+license = { text = "MIT" }
+keywords = ["SAR", "Sentinel-1", "remote-sensing", "agriculture", "pyroSAR", "ASF"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "geopandas",
+    "shapely",
+    "rasterio",
+    "requests",
+    "asf_search",
+    "pyroSAR",
+]
+
+[project.urls]
+Homepage = "https://github.com/Dev-Arnab/sar2parquet"
+Repository = "https://github.com/Dev-Arnab/sar2parquet"
+Issues = "https://github.com/Dev-Arnab/sar2parquet/issues"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+sar2parquet = "sar2parquet.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

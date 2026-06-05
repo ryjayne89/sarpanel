@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Credentials / secrets (NEVER commit these)
+*.env
+.env
+*token*
+asf_token.txt
+.netrc
+
+# Data & heavyweight artifacts
+*.zip
+*.tar
+*.tar.gz
+*.tif
+*.tiff
+*.parquet
+*.feather
+*.csv
+*.npy
+*.npz
+
+# Working/output dirs created by the pipeline
+_work/
+out/
+output/
+downloads/
+processed_S1/
+
+# OS cruft
+.DS_Store
+Thumbs.db
