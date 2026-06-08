@@ -6,7 +6,7 @@ and writes compact, per-pixel Parquet for each field and acquisition date.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = ["process_fields", "__version__"]
 

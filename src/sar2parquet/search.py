@@ -62,20 +62,30 @@ def search_scenes(
     import asf_search as asf
 
     if product_type.upper() == "GRD":
-        levels = _product_types(["GRD", "GRD_HD", "GRD_MD"])
+        levels = _product_types(["GRD_HD", "GRD_MD"])
     elif product_type.upper() == "SLC":
         levels = _product_types(["SLC"])
     else:
         raise ValueError(f"Unsupported product_type: {product_type!r} (use 'GRD' or 'SLC').")
 
     kwargs = dict(
-        platform=[asf.PLATFORM.SENTINEL1A, asf.PLATFORM.SENTINEL1B],
         processingLevel=levels,
         start=datetime.strptime(start_date, "%Y-%m-%d").date(),
         end=datetime.strptime(end_date, "%Y-%m-%d").date(),
         intersectsWith=wkt_aoi,
         maxResults=None,
     )
+
+    # Select Sentinel-1 by the constellation-level dataset, which covers all
+    # missions (1A/1C/1D, ...). The legacy ``platform=[SENTINEL1A, SENTINEL1B]``
+    # filter silently excluded newer satellites (e.g. Sentinel-1C). Fall back to
+    # the platform list only on older asf_search versions without DATASET.
+    dataset = getattr(getattr(asf, "DATASET", None), "SENTINEL1", None)
+    if dataset is not None:
+        kwargs["dataset"] = dataset
+    else:
+        kwargs["platform"] = [asf.PLATFORM.SENTINEL1A, asf.PLATFORM.SENTINEL1B]
+
     if beam_mode:
         kwargs["beamMode"] = [getattr(asf.BEAMMODE, beam_mode)]
 
