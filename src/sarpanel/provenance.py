@@ -142,6 +142,24 @@ def write_parquet_with_provenance(
     return path
 
 
+def validate_observation_file(path: str | Path, granularity: str) -> int:
+    """Reject old outputs of a different granularity before reuse or aggregation."""
+    import pyarrow.parquet as pq
+
+    metadata = pq.read_metadata(path)
+    columns = set(metadata.schema.names)
+    required = {"aoi_id", "scene_id", "date"}
+    required.update({"x", "y"} if granularity == "pixel" else {"n_pixels_valid"})
+    if not required <= columns:
+        raise ValueError(
+            f"{path} does not contain {granularity} observations "
+            f"(missing {sorted(required - columns)}). "
+            "Use a new output.root and rerun plan and run; existing polygon "
+            "summaries cannot be converted back into pixel observations."
+        )
+    return metadata.num_rows
+
+
 def read_provenance(path: str | Path) -> dict[str, str]:
     """Recover the provenance record from a written parquet."""
     import pyarrow.parquet as pq

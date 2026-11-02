@@ -1,5 +1,6 @@
 # Portable first run. No cluster paths and no field file required.
 #
+# Pixel output: one row per valid pixel per AOI per scene.
 # One small box in central Michigan, one month of Sentinel-1 GRD.
 # `sarpanel plan` only searches the catalog. `sarpanel run` downloads the
 # scenes and needs both an Earthdata login and ESA SNAP. See README.md.
@@ -35,7 +36,7 @@ processing:
   subset_buffer_m: 5000
 
 output:
-  root: "./runs/local_demo"
-  granularity: polygon
+  root: "./runs/local_demo_pixel"
+  granularity: pixel
 
 n_shards: 1

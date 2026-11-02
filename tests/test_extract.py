@@ -171,6 +171,78 @@ def test_pixel_granularity_returns_one_row_per_pixel(scene, context):
     assert df["VV_linear"].min() == pytest.approx(1.0)
 
 
+def test_default_extraction_preserves_pixel_coordinates_and_values(scene, context):
+    aoi = make_aoi(polygon_over_bright_patch())
+    with SceneReader(scene) as reader:
+        df = extract_scene(reader, aoi, context)
+    assert len(df) == 400
+    assert not df.duplicated(["aoi_id", "scene_id", "x", "y"]).any()
+    assert sorted(df["x"].unique()) == pytest.approx(
+        ORIGIN_X + (np.arange(30, 50) + 0.5) * RES
+    )
+    assert sorted(df["y"].unique()) == pytest.approx(
+        np.sort(ORIGIN_Y - (np.arange(20, 40) + 0.5) * RES)
+    )
+    expected_angles = np.linspace(30, 45, 100)[30:50]
+    by_column = df.groupby("x")["inc_angle"].first().to_numpy()
+    np.testing.assert_allclose(by_column, expected_angles, atol=1e-4)
+    assert df["VV_db"].eq(0).all()
+    assert df["date"].eq(context.acquisition_date).all()
+    assert "VV_mean_db" not in df and "enl_empirical" not in df
+
+
+def test_default_pixel_output_excludes_flagged_pixels(tmp_path, scene, context):
+    mask = np.zeros((100, 100), dtype=np.float32)
+    mask[20:30, 30:50] = 1
+    bands = dict(scene)
+    bands["layover_shadow"] = write_band(tmp_path / "flagged.tif", mask)
+    with SceneReader(bands) as reader:
+        df = extract_scene(reader, make_aoi(polygon_over_bright_patch()), context)
+    assert len(df) == 200
+    assert df["layover_shadow"].eq(0).all()
+
+
+def test_scene_pipeline_writes_and_aggregates_pixels(tmp_path, scene, monkeypatch):
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    import sarpanel.runner as runner
+    from sarpanel.cli import main
+    from sarpanel.config import RunConfig
+
+    cfg = RunConfig.from_dict({
+        "name": "pixels", "aoi": {"source": "-84.6,42.6,-84.5,42.7"},
+        "search": {"start_date": "2020-06-01", "end_date": "2020-06-30"},
+        "processing": {"product_type": "GRD"},
+        "output": {"root": str(tmp_path / "run")},
+    })
+    row = pd.Series({
+        "scene_id": "one", "acquisition_date": "2020-06-08",
+        "start_time": "2020-06-08T00:00:00Z", "url": "unused",
+    })
+    downloads = []
+
+    def download(url, dest, session):
+        downloads.append(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"synthetic scene")
+
+    monkeypatch.setattr(runner, "download_scene", download)
+    monkeypatch.setattr(runner, "geocode_scene", lambda **kwargs: scene)
+    aoi = make_aoi(polygon_over_bright_patch())
+    caps = SimpleNamespace(supports=lambda name: False)
+    result = runner.process_scene(row, aoi, cfg, None, caps, {})
+    assert result.status == "ok" and result.n_observations == 400
+    df = pd.read_parquet(result.output_path)
+    assert len(df) == 400 and {"x", "y", "VV_db", "VH_db", "inc_angle"} <= set(df)
+    path = cfg.write(tmp_path / "config.yaml")
+    assert main(["aggregate", str(path)]) == 0
+    assert len(pd.read_parquet(cfg.root / "pixels_observations.parquet")) == 400
+    assert runner.process_scene(row, aoi, cfg, None, caps, {}).status == "skipped"
+    assert len(downloads) == 1
+
+
 def test_layover_shadow_pixels_are_excluded(tmp_path, scene, context):
     lsm = np.zeros((100, 100), dtype=np.float32)
     lsm[20:30, 30:50] = 1.0  # flag half the patch as layover

@@ -237,7 +237,11 @@ def cmd_aggregate(args) -> int:
     import pandas as pd
 
     from .config import RunConfig
-    from .provenance import read_provenance, write_parquet_with_provenance
+    from .provenance import (
+        read_provenance,
+        validate_observation_file,
+        write_parquet_with_provenance,
+    )
 
     config = RunConfig.from_yaml(args.config)
     files = sorted(config.observations_dir.rglob("*.parquet"))
@@ -245,6 +249,12 @@ def cmd_aggregate(args) -> int:
         print(f"No observations under {config.observations_dir}")
         return 1
 
+    try:
+        for file in files:
+            validate_observation_file(file, config.output.granularity)
+    except (ValueError, OSError) as exc:
+        print(f"Cannot aggregate: {exc}")
+        return 1
     frames = [pd.read_parquet(f) for f in files]
     combined = pd.concat(frames, ignore_index=True)
 
@@ -263,8 +273,9 @@ def cmd_aggregate(args) -> int:
     print(f"  dates          {combined['date'].nunique():,}")
     if "enl_empirical" in combined:
         print(f"  median ENL     {combined['enl_empirical'].median():.2f}")
-    if "inc_angle_mean" in combined:
-        lo, hi = combined["inc_angle_mean"].min(), combined["inc_angle_mean"].max()
+    angle = "inc_angle" if "inc_angle" in combined else "inc_angle_mean"
+    if angle in combined:
+        lo, hi = combined[angle].min(), combined[angle].max()
         print(f"  incidence      {lo:.1f} to {hi:.1f} degrees")
     print(f"  written to     {out}")
     return 0
@@ -273,8 +284,8 @@ def cmd_aggregate(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sarpanel",
-        description="Analysis-ready Sentinel-1 observations over polygons, "
-        "with acquisition geometry and speckle statistics retained.",
+        description="Analysis-ready Sentinel-1 pixel observations within polygons, "
+        "with backscatter and acquisition geometry retained.",
     )
     parser.add_argument("--version", action="version", version=f"sarpanel {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true")

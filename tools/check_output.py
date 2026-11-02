@@ -77,13 +77,33 @@ def main() -> int:
 
     ok = True
 
+    pixel = config.output.granularity == "pixel"
+    if pixel:
+        required = {"aoi_id", "scene_id", "date", "x", "y", "inc_angle"}
+        required.update(f"{pol}_linear" for pol in config.processing.polarizations)
+        required.update(f"{pol}_db" for pol in config.processing.polarizations)
+        missing = required - set(df.columns)
+        if missing:
+            print(f"{FAIL} missing pixel columns: {sorted(missing)}")
+            return 1
+        ok &= check("pixel coordinates populated", bool(df[["x", "y"]].notna().all().all()))
+        ok &= check(
+            "one row per pixel per AOI per scene",
+            not df.duplicated(["aoi_id", "scene_id", "x", "y"]).any(),
+        )
+        for pol in config.processing.polarizations:
+            values = df[f"{pol}_linear"]
+            ok &= check(f"{pol} linear power positive", bool((values > 0).all()))
+        print("  Pixel mode: ENL and mean uncertainty require later summaries; aggregate only stacks rows.")
+
     # ---- incidence angle ---------------------------------------------------
     print("\nIncidence angle")
-    if "inc_angle_mean" not in df.columns:
+    inc_col = "inc_angle" if pixel else "inc_angle_mean"
+    if inc_col not in df.columns:
         print(f"{FAIL} column absent entirely")
         return 1
 
-    inc = df["inc_angle_mean"]
+    inc = df[inc_col]
     n_null = int(inc.isna().sum())
     ok &= check("column populated", n_null == 0, f"{n_null:,} null of {len(df):,}")
     ok &= check(
@@ -95,7 +115,7 @@ def main() -> int:
     # The decisive test. Different tracks view the same ground at different
     # angles, so a per-observation angle must differ between them.
     if "relative_orbit" in df.columns and df["relative_orbit"].nunique() > 1:
-        by_track = df.groupby("relative_orbit")["inc_angle_mean"].agg(["mean", "std", "count"])
+        by_track = df.groupby("relative_orbit")[inc_col].agg(["mean", "std", "count"])
         print("\n  by track:")
         for track, row in by_track.iterrows():
             print(f"    track {int(track):>3}   mean {row['mean']:5.2f}   "
@@ -111,7 +131,8 @@ def main() -> int:
 
     # Within a single field the angle should be near-constant on a given date
     # but differ across dates from different tracks.
-    per_field = df.groupby("aoi_id")["inc_angle_mean"].agg(["min", "max", "nunique"])
+    acquisitions = df.groupby(["aoi_id", "scene_id"], as_index=False)[inc_col].mean()
+    per_field = acquisitions.groupby("aoi_id")[inc_col].agg(["min", "max", "nunique"])
     varying = int((per_field["max"] - per_field["min"] > 0.5).sum())
     ok &= check(
         "angle varies within a field across dates",
@@ -163,7 +184,7 @@ def main() -> int:
     # ---- backscatter -------------------------------------------------------
     print("\nBackscatter")
     for pol in ("VV", "VH"):
-        col = f"{pol}_mean_db"
+        col = f"{pol}_db" if pixel else f"{pol}_mean_db"
         if col not in df.columns:
             continue
         v = df[col].dropna()
@@ -175,17 +196,20 @@ def main() -> int:
                 f"p01 {v.quantile(0.01):.1f}  median {v.median():.1f}  "
                 f"p99 {v.quantile(0.99):.1f} dB"
             ),
+            warn_only=pixel,
         )
         se = df.get(f"{pol}_se_db")
         if se is not None:
             print(f"    {pol} standard error: median {se.median():.3f} dB  "
                   f"range {se.min():.3f} to {se.max():.3f}")
 
-    if {"VV_mean_db", "VH_mean_db"} <= set(df.columns):
+    vv_col, vh_col = ("VV_db", "VH_db") if pixel else ("VV_mean_db", "VH_mean_db")
+    if {vv_col, vh_col} <= set(df.columns):
         ok &= check(
             "VH is below VV",
-            bool((df["VH_mean_db"] < df["VV_mean_db"]).mean() > 0.95),
-            "cross-pol returns less power than co-pol for vegetation",
+            bool((df[vh_col] < df[vv_col]).mean() > 0.95),
+            "cross-pol usually returns less power than co-pol for vegetation",
+            warn_only=pixel,
         )
 
     # ---- provenance --------------------------------------------------------

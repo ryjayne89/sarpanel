@@ -20,7 +20,7 @@
 # granules instead of ~5 GB ones and skips TOPSAR deburst, so it finishes in
 # well under an hour on a dev node. It exercises the identical code path as the
 # full run: catalog query, manifest, download, SNAP graph, incidence angle band,
-# extraction, ENL, provenance, parquet write.
+# pixel extraction, provenance, parquet write.
 #
 # Submit it, do not run it interactively. Development and login nodes cap
 # per-user memory and CPU time below what Terrain-Flattening needs on a full
@@ -32,10 +32,10 @@
 #   python tools/check_output.py configs/smoke_test.yaml
 #
 # What to check afterwards, in this order:
-#   1. inc_angle_mean is populated and sits in a plausible 29 to 46 degree band
-#   2. inc_angle_std is small within a field but differs across tracks
-#   3. enl_empirical is a few looks, not NaN and not absurdly large
-#   4. VV_mean_db is roughly -8 to -18 for cropland
+#   1. inc_angle is populated and sits in a plausible 29 to 46 degree band
+#   2. x and y locate individual pixels inside the selected field
+#   3. each scene contains many pixel rows; no polygon means are written
+#   4. VV_db and VH_db contain finite pixel backscatter values
 #
 # If any of those look wrong, stop and diagnose here rather than at 60 shards.
 
@@ -47,7 +47,7 @@ aoi:
   min_area_m2: 12140
 
   # One field only. Replace the name with any identifier the inspector listed;
-  # a large field gives a cleaner ENL estimate for a first look.
+  # a large field gives plenty of valid pixels for a first look.
   where: "farm_name == '520_Pitsilo'"
 
   search_buffer_m: 5000
@@ -100,7 +100,7 @@ processing:
 
 output:
   root: "/mnt/gs21/scratch/bassolab/sarpanel_smoke_slc"
-  granularity: polygon
+  granularity: pixel
   min_valid_pixels: 16
   drop_layover_shadow: true
 

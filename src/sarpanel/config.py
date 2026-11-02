@@ -45,7 +45,7 @@ class SearchConfig:
 @dataclass
 class OutputConfig:
     root: str
-    granularity: str = "polygon"
+    granularity: str = "pixel"
     min_valid_pixels: int = 4
     enl_trim_percentile: float | None = 2.0
     drop_layover_shadow: bool = True

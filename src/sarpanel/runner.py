@@ -30,7 +30,11 @@ from .processing import (
     validate_geometry_bands,
     write_scene_subset,
 )
-from .provenance import build_provenance, write_parquet_with_provenance
+from .provenance import (
+    build_provenance,
+    validate_observation_file,
+    write_parquet_with_provenance,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,8 +115,13 @@ def process_scene(
 
     # Completion check first, before any transfer or processing.
     if out_path.exists() and out_path.stat().st_size > 0:
+        try:
+            n_rows = validate_observation_file(out_path, config.output.granularity)
+        except Exception as exc:
+            log.error("Cannot reuse %s: %s", scene_id, exc)
+            return SceneResult(scene_id, "failed", error=str(exc))
         log.info("Skipping %s, output already present", scene_id)
-        return SceneResult(scene_id, "skipped", output_path=str(out_path))
+        return SceneResult(scene_id, "skipped", n_rows, output_path=str(out_path))
 
     work = config.work_dir
     archive_dir = work / "archives"

@@ -1,19 +1,19 @@
 # sarpanel
 
-Analysis-ready **Sentinel-1** observations over polygons, written to **Parquet**,
-with the acquisition geometry and speckle statistics kept alongside the
-backscatter.
+Analysis-ready **Sentinel-1 pixel observations**, written to **Parquet**,
+with spatial coordinates, backscatter, and acquisition geometry retained.
 
-Give the program a polygon (or many polygons) and a date range. It queries the
-Alaska Satellite Facility (ASF) archive once, processes the matching Sentinel-1
-scenes with [ESA SNAP](https://step.esa.int/main/toolboxes/snap/) through
-[pyroSAR](https://github.com/johntruckenbrodt/pyroSAR), and writes **one row per
-polygon per acquisition**. Each row has the backscatter estimate and the
-information a statistical model needs in order to weight that estimate.
+Give the program an area of interest (one polygon or many) and a date range.
+It queries the Alaska Satellite Facility (ASF) archive, processes matching
+Sentinel-1 scenes with [ESA SNAP](https://step.esa.int/main/toolboxes/snap/)
+through [pyroSAR](https://github.com/johntruckenbrodt/pyroSAR), and writes
+**one row per valid pixel per AOI per scene (acquisition granule)** by default.
+The polygons identify where to extract pixels; individual pixel values and
+locations are preserved for spatial and temporal analysis.
 
-An earlier version of this tool was called `sar2parquet` and wrote one row per
-pixel. This version writes one row per polygon per acquisition. The repository,
-the Python import, and the command-line program all use the name `sarpanel`.
+This tool was previously called `sar2parquet`. The repository, Python import,
+and command-line program are now named `sarpanel`. The default output remains
+pixel-level. Field/polygon summaries are an optional, explicitly selected mode.
 
 ## Start here: use a terminal
 
@@ -233,7 +233,7 @@ processing:
 
 output:
   root: "./runs/my_run"
-  granularity: polygon
+  granularity: pixel
 
 n_shards: 1
 ```
@@ -246,7 +246,7 @@ n_shards: 1
 | `processing.target_crs` | Choose a projected CRS in metres suitable for your area. The example's `EPSG:32616` is UTM zone 16N; it is not a global default. |
 | `processing.target_spacing_m` | Output pixel spacing in metres. Start with `10.0` for this GRD workflow. |
 | `output.root` | Choose a new result directory for each different area, date range, or processing configuration. |
-| `output.granularity` | Keep `polygon` for one summary per polygon per scene; `pixel` creates much larger tables. |
+| `output.granularity` | Keep `pixel` to preserve each valid pixel and its coordinates. `polygon` is an optional summary mode. |
 | `n_shards` | Keep `1` on a laptop and run `--shard 0`. |
 
 For bounding boxes, the order is **minimum longitude, minimum latitude,
@@ -335,7 +335,7 @@ Do not plan one configuration and run another.
 Outputs for the demo land in:
 
 ```text
-runs/local_demo/
+runs/local_demo_pixel/
 ├── manifest/                        scene manifest, resolved AOI, saved config
 ├── work/                            downloads and SNAP intermediates
 ├── observations/                    one Parquet file per processed scene
@@ -352,7 +352,7 @@ few valid pixels overlap the polygon.
 To inspect the combined table directly in the terminal:
 
 ```powershell
-conda run --no-capture-output -n sarpanel python -c "import pandas as pd; df = pd.read_parquet('runs/local_demo/local_demo_observations.parquet'); print(df[['date', 'relative_orbit', 'inc_angle_mean', 'n_pixels_valid', 'enl_empirical', 'VV_mean_db', 'VV_se_db']].head())"
+conda run --no-capture-output -n sarpanel python -c "import pandas as pd; df = pd.read_parquet('runs/local_demo_pixel/local_demo_observations.parquet'); print(df[['aoi_id', 'scene_id', 'date', 'x', 'y', 'relative_orbit', 'inc_angle', 'VV_db', 'VH_db']].head())"
 ```
 
 Observation rows use **`date`**; the scene manifest uses `acquisition_date`.
@@ -360,9 +360,9 @@ The example path above is for the demo. Your combined table is written to
 `<output.root>/<name>_observations.parquet`.
 
 For a Michigan cropland smoke test, populated incidence angles around 29–46
-degrees, finite ENL for sufficiently large valid samples, and substantial valid
-pixel counts are useful initial checks. Expected backscatter depends on the
-land cover, season, and processing; an error-free run is not a substitute for
+degrees, finite pixel backscatter, and valid spatial coordinates are useful
+initial checks. A scene covering a field should yield many pixel rows. Expected
+backscatter depends on the land cover, season, and processing; an error-free run is not a substitute for
 checking the measurements.
 
 ## Optional: use Jupyter to analyze the output
@@ -397,8 +397,8 @@ For analysis, read the output with pandas:
 ```python
 import pandas as pd
 
-df = pd.read_parquet("runs/local_demo/local_demo_observations.parquet")
-print(df[["date", "relative_orbit", "inc_angle_mean", "VV_mean_db"]].head())
+df = pd.read_parquet("runs/local_demo_pixel/local_demo_observations.parquet")
+print(df[["aoi_id", "date", "x", "y", "inc_angle", "VV_db", "VH_db"]].head())
 ```
 
 Use an absolute path if your notebook is saved outside the repository root.
@@ -414,7 +414,7 @@ All commands below can be invoked with the explicit prefix used above:
 | `plan CONFIG` | Searches ASF and writes a manifest without downloading scene archives |
 | `run CONFIG --shard 0 --strict` | Downloads and processes one shard; reports failures through its exit code |
 | `status CONFIG` | Summarizes saved per-shard outcomes |
-| `aggregate CONFIG` | Combines per-scene Parquet files into one table |
+| `aggregate CONFIG` | Concatenates per-scene files into one table, preserving individual pixel rows |
 
 Once `conda activate sarpanel` is verified to select the correct Python,
 `sarpanel ...` is the shorter equivalent. `run --help` lists the flags.
@@ -433,26 +433,57 @@ sbatch --array=0-0 slurm/run_shard.sb configs/your_run.yaml
 Set the array range to `0` through `n_shards - 1`. Local laptop runs do not use
 these SLURM commands.
 
-## What a row contains
+## What a pixel row contains
 
 | Field | Meaning |
 |---|---|
-| `VV_mean_db`, `VH_mean_db` | backscatter, averaged in linear power and then converted to decibels |
-| `inc_angle_mean` / `std` / `min` / `max` | terrain-corrected projected local incidence angle |
-| `looks_nominal` | multilooking implied by the processing configuration |
-| `enl_empirical` | equivalent number of looks estimated from the data |
-| `enl_efficiency` | ratio of the two, i.e. how much independence the processing retained |
-| `n_pixels_valid` | pixels that survived nodata, layover, and shadow masking |
-| `*_se_db` | standard error of the polygon mean |
-| `*_cv` | linear-domain coefficient of variation (texture) |
-| `relative_orbit`, `orbit_direction` | which track viewed the polygon, and whether the pass was ascending or descending |
-| `layover_shadow_fraction` | share of the polygon that is not a real measurement |
+| `aoi_id` | Field or AOI containing this pixel |
+| `scene_id`, `date`, `start_time` | Acquisition granule and time; `date` alone is not a unique acquisition key |
+| `x`, `y` | Pixel-center coordinates in `processing.target_crs` (projected metres) |
+| `VV_linear`, `VH_linear` | Per-pixel backscatter in linear power for the requested polarizations |
+| `VV_db`, `VH_db` | The same pixel values in decibels |
+| `inc_angle` | Terrain-corrected projected local incidence angle at this pixel |
+| `layover_shadow` | Mask value, when exported; flagged pixels are excluded by default |
+| `looks_nominal`, `looks_range`, `looks_azimuth` | Scene-level nominal-look estimates repeated on pixel rows |
+| `relative_orbit`, `orbit_direction`, `absolute_orbit` | Track and viewing geometry |
+| `platform`, `product_type`, `frame_number` | Acquisition metadata |
 
-A two-hectare plot and a hundred-hectare field observed on the same day do not
-have the same precision. Precision depends on how many independent looks went
-into the mean. Different tracks also arrive at different incidence angles, and
-backscatter depends on that angle. `sarpanel` keeps those quantities so a later
-model can use them.
+Only valid pixels are written. Overlapping AOIs can contain the same physical
+pixel, with a separate row under each `aoi_id`. Adjacent or overlapping scenes
+on the same date remain separate through `scene_id`; they are not deduplicated
+by date. A pixel observation is identified within an output by
+`aoi_id`, `scene_id`, `x`, and `y`.
+
+`aggregate` **stacks scene files; it does not average pixels into polygons**.
+The current aggregate command loads the combined table into memory. For very
+large studies, work with per-scene Parquet files or a Parquet dataset instead
+of combining the entire study in RAM.
+
+### Optional polygon summaries
+
+Set `output.granularity: polygon` explicitly, with a separate `output.root`,
+only when a field summary is wanted. This mode writes one row per AOI per
+scene with columns such as `VV_mean_db`, `VH_mean_db`, `inc_angle_mean`,
+`n_pixels_valid`, `enl_empirical`, `enl_efficiency`, `*_cv`, `*_se_db`, and
+`layover_shadow_fraction`. These aggregate statistics are **not columns in
+the default pixel output**. Means are computed in linear power before
+conversion to decibels. You can also compute summaries later from pixel data,
+choosing your own spatial grouping and uncertainty assumptions.
+
+### Migrating an earlier polygon-mode run
+
+Previously, the package default and most sample configs selected polygon
+summaries. If a demo produced just four rows for four scenes, those were
+polygon summaries, not the intended pixel dataset. Existing summaries cannot
+be expanded back into the original pixel measurements.
+
+The demo now writes to **`runs/local_demo_pixel/`**, preserving any older
+`runs/local_demo/` results. After updating, rerun `plan`, then `run`, using
+`configs/local_demo.yaml`. This performs a new pixel extraction and may
+redownload scenes and run SNAP again. Merely changing the YAML or running
+`aggregate` on old summary files cannot recover the pixels. The runner and
+aggregate command reject files whose schema does not match the selected
+output granularity; use a new `output.root` for your own migrated runs too.
 
 ## Choices that change the result
 
@@ -470,10 +501,10 @@ because result order is not stable.
 **Filenames include the scene id.** Two granules can share a date and an orbit
 direction. Naming files only by date would drop one of them.
 
-**Means are computed in linear power.** Averaging decibels pulls the result
-low, and the pull is larger where the field is more heterogeneous. The package
-refuses `scaling: dB` at geocode time. Decibels are applied when the polygon
-mean is reported.
+**Backscatter is processed in linear power.** Pixel output retains both
+linear power and its decibel conversion. When computing a field mean, average
+linear power first, then convert that mean to decibels. Averaging decibels
+biases the result low. The package refuses `scaling: dB` at geocode time.
 
 **A finished scene is detected before it is downloaded again.** Rerunning
 `run` continues the unfinished scenes.
@@ -531,8 +562,8 @@ token authentication is broken.
 `sarpanel` is developed by **Dev Jyoti Ghosh Arnab** and **Ryan Jayne**.
 
 The package is a joint effort to turn a Sentinel-1 processing workflow into an
-installable tool: search, SNAP processing, and polygon-level tables with
-geometry and speckle statistics included.
+installable tool: search, SNAP processing, and pixel-level tables with
+spatial coordinates and acquisition geometry retained.
 
 ## License
 

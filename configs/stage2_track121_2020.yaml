@@ -102,10 +102,9 @@ output:
   root: "/mnt/gs21/scratch/bassolab/sarpanel_stage2_2020"
 
   # Measured from the catalog: 692 scenes touching an average of 153 fields each
-  # gives about 105,800 polygon-level observations, or roughly 219 million rows
-  # at pixel granularity. Both are workable. Polygon first to validate, then
-  # rerun with pixel for the within-field yield zone work.
-  granularity: polygon
+  # gives roughly 219 million pixel rows. Pixel output preserves the spatial
+  # structure needed for the within-field yield zone work.
+  granularity: pixel
 
   # The smallest retained field holds about 600 pixels at 10 m, so this
   # threshold excludes nothing here. It stays in as a guard against scenes that

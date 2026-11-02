@@ -34,6 +34,9 @@ TOLERANCE_DB = 0.05
 
 KEYS = ["aoi_id", "date"]
 COMPARE = [
+    "VV_db",
+    "VH_db",
+    "inc_angle",
     "inc_angle_mean",
     "inc_angle_std",
     "n_pixels_valid",
@@ -63,10 +66,20 @@ def main() -> int:
     a, b = load(args.baseline), load(args.candidate)
     lab_a, lab_b = args.labels
 
-    merged = a.merge(b, on=KEYS, suffixes=("_a", "_b"))
+    pixel = {"x", "y"} <= set(a.columns)
+    if pixel != ({"x", "y"} <= set(b.columns)):
+        raise SystemExit("Cannot compare pixel observations with polygon summaries")
+    keys = ["aoi_id", "scene_id", "date"]
+    if not set(keys) <= set(a.columns) or not set(keys) <= set(b.columns):
+        raise SystemExit("Scene identifiers are required to match acquisitions safely")
+    if pixel:
+        keys += ["x", "y"]
+    if a.duplicated(keys).any() or b.duplicated(keys).any():
+        raise SystemExit("Duplicate observation keys; comparison would multiply rows")
+    merged = a.merge(b, on=keys, suffixes=("_a", "_b"), validate="one_to_one")
     print(f"\n{lab_a}: {len(a)} rows   {lab_b}: {len(b)} rows   matched: {len(merged)}")
     if merged.empty:
-        raise SystemExit("No rows matched on aoi_id and date")
+        raise SystemExit("No rows matched on AOI, scene, and pixel coordinates (when present)")
 
     print(f"\n{'column':18} {'mean diff':>11} {'median':>9} {'max abs':>9} "
           f"{'sd':>8}  verdict")
@@ -94,6 +107,13 @@ def main() -> int:
 
         print(f"{col:18} {diff.mean():>11.4f} {diff.median():>9.4f} "
               f"{diff.abs().max():>9.4f} {diff.std():>8.4f}  {verdict}")
+
+    # Normalize comparison column names for the shared diagnostics below.
+    if pixel:
+        merged = merged.rename(columns={
+            f"{pol}_db_{side}": f"{pol}_mean_db_{side}"
+            for pol in ("VV", "VH") for side in ("a", "b")
+        })
 
     # A shared offset across polarisations points at the radiometric
     # normalisation rather than at geometry or resampling.

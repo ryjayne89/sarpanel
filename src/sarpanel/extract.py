@@ -1,11 +1,10 @@
 """
-Polygon-native extraction of analysis-ready observations.
+Pixel-level extraction of analysis-ready observations within AOI polygons.
 
 This is the part of the package that differs from existing SAR toolchains.
-Rather than writing image products and leaving the user to sample them, each
-(polygon, acquisition) pair becomes a row with the backscatter estimate, the
-acquisition geometry that produced it, and the information needed to weight it
-in a statistical model.
+Each valid pixel within an AOI becomes a row carrying its coordinates,
+backscatter, acquisition geometry, and scene metadata. Polygon summaries are
+available only when explicitly requested.
 
 Two output granularities are supported:
 
@@ -17,7 +16,7 @@ Two output granularities are supported:
     the empirical ENL, the valid pixel count, and the resulting standard error.
     Typically two to three orders of magnitude smaller.
 
-Both can be written from a single read of the scene.
+The requested granularity is extracted from the scene; pixel is the default.
 """
 
 from __future__ import annotations
@@ -213,7 +212,7 @@ def extract_scene(
     reader: SceneReader,
     aoi: AOISet,
     context: SceneContext,
-    granularity: str = "polygon",
+    granularity: str = "pixel",
     min_valid_pixels: int = 4,
     enl_trim_percentile: float | None = 2.0,
     drop_layover_shadow: bool = True,
