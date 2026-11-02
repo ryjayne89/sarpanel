@@ -1,22 +1,9 @@
 """
-Pixel-level extraction of analysis-ready observations within AOI polygons.
+Pixel-only extraction of Sentinel-1 observations within AOI polygons.
 
-This is the part of the package that differs from existing SAR toolchains.
-Each valid pixel within an AOI becomes a row carrying its coordinates,
-backscatter, acquisition geometry, and scene metadata. Polygon summaries are
-available only when explicitly requested.
-
-Two output granularities are supported:
-
-``pixel``
-    One row per pixel per polygon per acquisition. Large, but necessary for
-    within-field spatial analysis such as yield zone delineation.
-``polygon``
-    One row per polygon per acquisition, with the mean computed in linear power,
-    the empirical ENL, the valid pixel count, and the resulting standard error.
-    Typically two to three orders of magnitude smaller.
-
-The requested granularity is extracted from the scene; pixel is the default.
+Each scene produces one row per valid pixel. Measurement and acquisition
+columns are suffixed with date and scene ID, allowing acquisitions to be
+joined side by side without averaging or overwriting same-date granules.
 """
 
 from __future__ import annotations
@@ -212,9 +199,7 @@ def extract_scene(
     reader: SceneReader,
     aoi: AOISet,
     context: SceneContext,
-    granularity: str = "pixel",
     min_valid_pixels: int = 4,
-    enl_trim_percentile: float | None = 2.0,
     drop_layover_shadow: bool = True,
 ) -> pd.DataFrame:
     """
@@ -224,9 +209,6 @@ def extract_scene(
     pixels, since a scene clipping the edge of the AOI set legitimately
     produces nothing.
     """
-    if granularity not in ("pixel", "polygon"):
-        raise ValueError("granularity must be 'pixel' or 'polygon'")
-
     aoi_projected = aoi.gdf.to_crs(reader.crs)
     scene_bounds = box(*rasterio.transform.array_bounds(*reader.shape, reader.transform))
     candidates = aoi_projected[aoi_projected.intersects(scene_bounds)]
@@ -246,9 +228,7 @@ def extract_scene(
             geometry=record.geometry,
             aoi_id=record.aoi_id,
             context=context,
-            granularity=granularity,
             min_valid_pixels=min_valid_pixels,
-            enl_trim_percentile=enl_trim_percentile,
             drop_layover_shadow=drop_layover_shadow,
         )
         if result is not None:
@@ -259,9 +239,7 @@ def extract_scene(
     if not rows:
         return pd.DataFrame()
 
-    if granularity == "pixel":
-        return pd.concat(rows, ignore_index=True)
-    return pd.DataFrame(rows)
+    return pd.concat(rows, ignore_index=True)
 
 
 def _extract_one(
@@ -269,9 +247,7 @@ def _extract_one(
     geometry,
     aoi_id: str,
     context: SceneContext,
-    granularity: str,
     min_valid_pixels: int,
-    enl_trim_percentile: float | None,
     drop_layover_shadow: bool,
 ):
     window = polygon_window(geometry, reader)
@@ -330,21 +306,8 @@ def _extract_one(
         return None
 
     rows_idx, cols_idx = np.where(valid)
-    if granularity == "pixel":
-        return _pixel_rows(
-            reader, window, rows_idx, cols_idx, pol_arrays, inc, lsm, aoi_id, context
-        )
-    return _polygon_row(
-        reader,
-        valid,
-        pol_arrays,
-        inc,
-        lsm,
-        inside,
-        aoi_id,
-        context,
-        n_valid,
-        enl_trim_percentile,
+    return _pixel_rows(
+        reader, window, rows_idx, cols_idx, pol_arrays, inc, lsm, aoi_id, context
     )
 
 
@@ -370,68 +333,6 @@ def _pixel_rows(reader, window, rows_idx, cols_idx, pol_arrays, inc, lsm, aoi_id
     df = pd.DataFrame(data)
     for key, value in context.as_row_fields().items():
         df[key] = value
-    return df
+    from .observations import date_pixel_columns
 
-
-def _polygon_row(
-    reader,
-    valid,
-    pol_arrays,
-    inc,
-    lsm,
-    inside,
-    aoi_id,
-    context,
-    n_valid,
-    enl_trim_percentile,
-):
-    row: dict = {"aoi_id": aoi_id, "n_pixels_valid": n_valid}
-    row["n_pixels_in_polygon"] = int(inside.sum())
-    row["valid_fraction"] = n_valid / max(1, int(inside.sum()))
-
-    enl_values = []
-    for pol, arr in pol_arrays.items():
-        sample = arr[valid].astype(np.float64)
-        mean_linear = float(sample.mean())
-        enl = rad.estimate_enl(sample, trim_percentile=enl_trim_percentile)
-        enl_values.append(enl)
-
-        row[f"{pol}_mean_linear"] = mean_linear
-        row[f"{pol}_mean_db"] = float(rad.to_db(mean_linear))
-        row[f"{pol}_median_db"] = float(rad.to_db(np.median(sample)))
-        row[f"{pol}_p10_db"] = float(rad.to_db(np.percentile(sample, 10)))
-        row[f"{pol}_p90_db"] = float(rad.to_db(np.percentile(sample, 90)))
-        row[f"{pol}_cv"] = rad.coefficient_of_variation(sample)
-        row[f"{pol}_enl"] = enl
-        row[f"{pol}_se_db"] = rad.speckle_standard_error_db(n_valid, enl)
-
-    if "VV" in pol_arrays and "VH" in pol_arrays:
-        vv = pol_arrays["VV"][valid].astype(np.float64)
-        vh = pol_arrays["VH"][valid].astype(np.float64)
-        row["VH_VV_ratio_db"] = float(rad.to_db(vh.mean() / vv.mean()))
-        # Radar Vegetation Index for dual-pol data.
-        row["rvi_dual"] = float(np.mean(4.0 * vh / (vv + vh)))
-
-    if inc is not None:
-        angles = inc[valid].astype(np.float64)
-        row["inc_angle_mean"] = float(angles.mean())
-        row["inc_angle_std"] = float(angles.std(ddof=1)) if angles.size > 1 else 0.0
-        row["inc_angle_min"] = float(angles.min())
-        row["inc_angle_max"] = float(angles.max())
-    else:
-        row["inc_angle_mean"] = float("nan")
-
-    if lsm is not None:
-        flagged = lsm[inside].astype(np.int32)
-        row["layover_shadow_fraction"] = float(np.mean(flagged != LAYOVER_SHADOW_VALID))
-
-    # The empirical ENL, averaged across polarizations, is the effective look
-    # count actually achieved. Comparing it with looks_nominal quantifies how
-    # much independence was lost to processing correlation and scene texture.
-    finite_enl = [e for e in enl_values if np.isfinite(e)]
-    row["enl_empirical"] = float(np.mean(finite_enl)) if finite_enl else float("nan")
-
-    row.update(context.as_row_fields())
-    if np.isfinite(row["enl_empirical"]) and row.get("looks_nominal"):
-        row["enl_efficiency"] = row["enl_empirical"] / row["looks_nominal"]
-    return row
+    return date_pixel_columns(df, context.acquisition_date, context.scene_id)

@@ -162,6 +162,16 @@ class GeocodeCapabilities:
             "tmpdir": tmpdir,
         }
 
+        # A shared grid is required to join the same physical pixel across dates.
+        grid_options = {
+            "alignToStandardGrid": True,
+            "standardGridOriginX": 0,
+            "standardGridOriginY": 0,
+        }
+        if not all(self.supports(name) for name in grid_options):
+            raise RuntimeError("Wide pixel time series require pyroSAR standard-grid support")
+        kwargs.update(grid_options)
+
         # Output pixel spacing: argument renamed between releases.
         if self.supports("tr"):
             kwargs["tr"] = cfg.target_spacing_m

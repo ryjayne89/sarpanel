@@ -233,10 +233,9 @@ def cmd_status(args) -> int:
 
 
 def cmd_aggregate(args) -> int:
-    """Combine per-scene parquets into one table, preserving provenance."""
-    import pandas as pd
-
+    """Join acquisitions side by side on pixel coordinates, preserving provenance."""
     from .config import RunConfig
+    from .observations import acquisition_columns, combine_pixel_frames, read_pixel_file
     from .provenance import (
         read_provenance,
         validate_observation_file,
@@ -251,15 +250,17 @@ def cmd_aggregate(args) -> int:
 
     try:
         for file in files:
-            validate_observation_file(file, config.output.granularity)
+            validate_observation_file(file, config.checksum())
     except (ValueError, OSError) as exc:
         print(f"Cannot aggregate: {exc}")
         return 1
-    frames = [pd.read_parquet(f) for f in files]
-    combined = pd.concat(frames, ignore_index=True)
-
-    sort_keys = [k for k in ("aoi_id", "date", "relative_orbit") if k in combined.columns]
-    combined = combined.sort_values(sort_keys).reset_index(drop=True)
+    frames = [read_pixel_file(f) for f in files]
+    try:
+        combined = combine_pixel_frames(frames)
+    except ValueError as exc:
+        print(f"Cannot aggregate: {exc}")
+        return 1
+    acquisitions = acquisition_columns(combined.columns)
 
     provenance = read_provenance(files[0])
     provenance["aggregated_from_n_scenes"] = str(len(files))
@@ -270,12 +271,12 @@ def cmd_aggregate(args) -> int:
     print(f"Combined {len(files):,} scene files")
     print(f"  observations   {len(combined):,}")
     print(f"  AOIs           {combined['aoi_id'].nunique():,}")
-    print(f"  dates          {combined['date'].nunique():,}")
-    if "enl_empirical" in combined:
-        print(f"  median ENL     {combined['enl_empirical'].median():.2f}")
-    angle = "inc_angle" if "inc_angle" in combined else "inc_angle_mean"
-    if angle in combined:
-        lo, hi = combined[angle].min(), combined[angle].max()
+    print(f"  acquisitions   {len(acquisitions):,}")
+    print(f"  dates          {len({key.split('__', 1)[0] for key in acquisitions}):,}")
+    angle_columns = [name for name in combined if name.startswith("inc_angle__")]
+    if angle_columns:
+        lo = combined[angle_columns].min().min()
+        hi = combined[angle_columns].max().max()
         print(f"  incidence      {lo:.1f} to {hi:.1f} degrees")
     print(f"  written to     {out}")
     return 0
@@ -285,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sarpanel",
         description="Analysis-ready Sentinel-1 pixel observations within polygons, "
-        "with backscatter and acquisition geometry retained.",
+        "with dated backscatter and acquisition geometry columns.",
     )
     parser.add_argument("--version", action="version", version=f"sarpanel {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -309,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("config")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("aggregate", help="combine per-scene outputs")
+    p = sub.add_parser("aggregate", help="join acquisitions into one row per pixel")
     p.add_argument("config")
     p.add_argument("--output", default=None)
     p.set_defaults(func=cmd_aggregate)

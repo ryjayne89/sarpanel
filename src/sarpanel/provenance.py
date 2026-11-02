@@ -142,21 +142,24 @@ def write_parquet_with_provenance(
     return path
 
 
-def validate_observation_file(path: str | Path, granularity: str) -> int:
-    """Reject old outputs of a different granularity before reuse or aggregation."""
+def validate_observation_file(path: str | Path, expected_checksum: str | None = None) -> int:
+    """Reject summaries and legacy long tables before reuse or aggregation."""
     import pyarrow.parquet as pq
 
+    from .observations import validate_pixel_columns
+
     metadata = pq.read_metadata(path)
-    columns = set(metadata.schema.names)
-    required = {"aoi_id", "scene_id", "date"}
-    required.update({"x", "y"} if granularity == "pixel" else {"n_pixels_valid"})
-    if not required <= columns:
+    try:
+        validate_pixel_columns(metadata.schema.names)
+        if expected_checksum is not None:
+            stored = (metadata.metadata or {}).get(b"config_checksum", b"").decode()
+            if stored != expected_checksum:
+                raise ValueError("Stored processing configuration differs from the requested run")
+    except ValueError as exc:
         raise ValueError(
-            f"{path} does not contain {granularity} observations "
-            f"(missing {sorted(required - columns)}). "
-            "Use a new output.root and rerun plan and run; existing polygon "
-            "summaries cannot be converted back into pixel observations."
-        )
+            f"{path}: {exc}. Use a new output.root and rerun plan and run; "
+            "polygon summaries cannot be converted back into pixel measurements."
+        ) from exc
     return metadata.num_rows
 
 

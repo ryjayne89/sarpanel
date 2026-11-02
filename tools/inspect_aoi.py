@@ -199,7 +199,7 @@ def main() -> int:
         print(f"  per year      {dict(per_year)}")
 
         obs = len(manifest) * manifest["n_aoi_hit"].mean()
-        print(f"\n  approx polygon-level observations: {human(obs)}")
+        print(f"\n  approx field-acquisition overlaps: {human(obs)}")
         print(f"  approx pixel-level rows:           "
               f"{human(obs * px[px >= args.min_area_m2 / 100].median())}")
 

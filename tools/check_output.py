@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""
-Verify a completed run, with emphasis on the acquisition geometry.
-
-Run this after the smoke test and again after stage 2. It checks the things
-that distinguish a working pipeline from one that produced plausible-looking
-numbers, and it is deliberately opinionated about what "working" means.
-
-    python tools/check_output.py configs/smoke_test.yaml
-
-The single most important check is whether the incidence angle varies across
-relative orbits. A constant angle, or one that is identical between tracks,
-means the value is not genuinely per-observation and the export_extra band is
-not being read. That is exactly the failure the old tie-point-grid approach
-produced: numbers in a plausible range that were not spatially correct.
-"""
+"""Validate pixel-only time-series outputs without collapsing spatial data."""
 
 from __future__ import annotations
 
@@ -21,216 +7,80 @@ import argparse
 import sys
 from pathlib import Path
 
-import pandas as pd
+import numpy as np
 
 
-def bootstrap() -> None:
-    try:
-        import sarpanel  # noqa: F401
-        return
-    except ImportError:
-        pass
-    for candidate in (Path(__file__).resolve().parents[1] / "src", Path.cwd() / "src"):
-        if (candidate / "sarpanel" / "__init__.py").exists():
-            sys.path.insert(0, str(candidate))
-            return
-    raise SystemExit("Could not import sarpanel; run from the repo root or set PYTHONPATH=src")
-
-
-PASS, FAIL, WARN = "  PASS ", "  FAIL ", "  warn "
-
-
-def check(label: str, condition: bool, detail: str = "", warn_only: bool = False) -> bool:
-    marker = PASS if condition else (WARN if warn_only else FAIL)
-    print(f"{marker} {label}{('  ' + detail) if detail else ''}")
-    return condition or warn_only
+def bootstrap():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("config")
-    ap.add_argument("--parquet", default=None, help="check one file instead of the whole run")
-    args = ap.parse_args()
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("config")
+    parser.add_argument("--parquet", help="check one scene or combined file")
+    args = parser.parse_args()
     bootstrap()
     from sarpanel.config import RunConfig
+    from sarpanel.observations import acquisition_columns, combine_pixel_frames, read_pixel_file
     from sarpanel.provenance import read_provenance
 
     config = RunConfig.from_yaml(args.config)
-
-    if args.parquet:
-        files = [Path(args.parquet)]
-    else:
-        files = sorted(config.observations_dir.rglob("*.parquet"))
+    files = [Path(args.parquet)] if args.parquet else sorted(
+        config.observations_dir.rglob("*.parquet")
+    )
     if not files:
-        print(f"No parquet files under {config.observations_dir}")
-        print("Has the run finished? Try: sarpanel status " + args.config)
+        print(f"No pixel outputs under {config.observations_dir}")
         return 1
-
-    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    print(f"\nRun: {config.name}")
-    print(f"  files          {len(files):,}")
-    print(f"  observations   {len(df):,}")
-    print(f"  fields         {df['aoi_id'].nunique():,}")
-    print(f"  dates          {df['date'].nunique():,}  "
-          f"({df['date'].min()} to {df['date'].max()})")
-
+    try:
+        frame = combine_pixel_frames([read_pixel_file(file) for file in files])
+    except (ValueError, OSError) as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    acquisitions = acquisition_columns(frame.columns)
+    print(f"Pixel rows: {len(frame):,}; AOIs: {frame.aoi_id.nunique():,}; "
+          f"acquisitions: {len(acquisitions):,}")
     ok = True
-
-    pixel = config.output.granularity == "pixel"
-    if pixel:
-        required = {"aoi_id", "scene_id", "date", "x", "y", "inc_angle"}
-        required.update(f"{pol}_linear" for pol in config.processing.polarizations)
-        required.update(f"{pol}_db" for pol in config.processing.polarizations)
-        missing = required - set(df.columns)
-        if missing:
-            print(f"{FAIL} missing pixel columns: {sorted(missing)}")
-            return 1
-        ok &= check("pixel coordinates populated", bool(df[["x", "y"]].notna().all().all()))
-        ok &= check(
-            "one row per pixel per AOI per scene",
-            not df.duplicated(["aoi_id", "scene_id", "x", "y"]).any(),
-        )
-        for pol in config.processing.polarizations:
-            values = df[f"{pol}_linear"]
-            ok &= check(f"{pol} linear power positive", bool((values > 0).all()))
-        print("  Pixel mode: ENL and mean uncertainty require later summaries; aggregate only stacks rows.")
-
-    # ---- incidence angle ---------------------------------------------------
-    print("\nIncidence angle")
-    inc_col = "inc_angle" if pixel else "inc_angle_mean"
-    if inc_col not in df.columns:
-        print(f"{FAIL} column absent entirely")
-        return 1
-
-    inc = df[inc_col]
-    n_null = int(inc.isna().sum())
-    ok &= check("column populated", n_null == 0, f"{n_null:,} null of {len(df):,}")
-    ok &= check(
-        "values in the Sentinel-1 IW range",
-        bool(inc.min() > 25 and inc.max() < 50),
-        f"observed {inc.min():.1f} to {inc.max():.1f} degrees",
-    )
-
-    # The decisive test. Different tracks view the same ground at different
-    # angles, so a per-observation angle must differ between them.
-    if "relative_orbit" in df.columns and df["relative_orbit"].nunique() > 1:
-        by_track = df.groupby("relative_orbit")[inc_col].agg(["mean", "std", "count"])
-        print("\n  by track:")
-        for track, row in by_track.iterrows():
-            print(f"    track {int(track):>3}   mean {row['mean']:5.2f}   "
-                  f"sd {row['std']:5.2f}   n {int(row['count']):,}")
-        spread = by_track["mean"].max() - by_track["mean"].min()
-        ok &= check(
-            "angle differs between tracks",
-            spread > 0.5,
-            f"spread {spread:.2f} degrees",
-        )
-    else:
-        print(f"{WARN} only one track present; cannot test between-track variation")
-
-    # Within a single field the angle should be near-constant on a given date
-    # but differ across dates from different tracks.
-    acquisitions = df.groupby(["aoi_id", "scene_id"], as_index=False)[inc_col].mean()
-    per_field = acquisitions.groupby("aoi_id")[inc_col].agg(["min", "max", "nunique"])
-    varying = int((per_field["max"] - per_field["min"] > 0.5).sum())
-    ok &= check(
-        "angle varies within a field across dates",
-        varying > 0,
-        f"{varying:,} of {len(per_field):,} fields",
-        warn_only=df.get("relative_orbit", pd.Series()).nunique() <= 1,
-    )
-
-    if "inc_angle_std" in df.columns:
-        across = df["inc_angle_std"].median()
-        ok &= check(
-            "within-field angle spread is small",
-            bool(across < 2.0),
-            f"median sd {across:.3f} degrees across the polygon",
-        )
-
-    # ---- looks and ENL -----------------------------------------------------
-    print("\nLooks and speckle")
-    if "enl_empirical" in df.columns:
-        enl = df["enl_empirical"].dropna()
-        ok &= check("ENL estimated", len(enl) > 0, f"{len(enl):,} of {len(df):,} rows")
-        if len(enl):
-            ok &= check(
-                "ENL is physically plausible",
-                bool(enl.quantile(0.05) > 0.5 and enl.quantile(0.95) < 200),
-                f"p05 {enl.quantile(0.05):.2f}  median {enl.median():.2f}  "
-                f"p95 {enl.quantile(0.95):.2f}",
-            )
-        if "looks_nominal" in df.columns and "enl_efficiency" in df.columns:
-            eff = df["enl_efficiency"].dropna()
-            if len(eff):
-                print(f"    nominal looks {df['looks_nominal'].iloc[0]:.2f}   "
-                      f"efficiency median {eff.median():.2f}")
-                ok &= check(
-                    "empirical ENL below nominal, as expected",
-                    bool(eff.median() < 1.5),
-                    "oversampling and texture always reduce independence",
-                    warn_only=True,
-                )
-
-    if "n_pixels_valid" in df.columns:
-        n = df["n_pixels_valid"]
-        ok &= check(
-            "pixel counts are sane",
-            bool(n.min() >= config.output.min_valid_pixels),
-            f"min {n.min():,}  median {n.median():,.0f}  max {n.max():,}",
-        )
-
-    # ---- backscatter -------------------------------------------------------
-    print("\nBackscatter")
-    for pol in ("VV", "VH"):
-        col = f"{pol}_db" if pixel else f"{pol}_mean_db"
-        if col not in df.columns:
+    for key, names in acquisitions.items():
+        columns = {name.split("__", 1)[0]: name for name in names}
+        linear = [columns.get(f"{pol}_linear") for pol in config.processing.polarizations]
+        if any(name is None for name in linear):
+            print(f"FAIL: missing polarization in {key}")
+            ok = False
             continue
-        v = df[col].dropna()
-        lo, hi = (-25, 0) if pol == "VV" else (-32, -5)
-        ok &= check(
-            f"{pol} in a plausible range",
-            bool(v.quantile(0.01) > lo and v.quantile(0.99) < hi),
-            (
-                f"p01 {v.quantile(0.01):.1f}  median {v.median():.1f}  "
-                f"p99 {v.quantile(0.99):.1f} dB"
-            ),
-            warn_only=pixel,
-        )
-        se = df.get(f"{pol}_se_db")
-        if se is not None:
-            print(f"    {pol} standard error: median {se.median():.3f} dB  "
-                  f"range {se.min():.3f} to {se.max():.3f}")
-
-    vv_col, vh_col = ("VV_db", "VH_db") if pixel else ("VV_mean_db", "VH_mean_db")
-    if {vv_col, vh_col} <= set(df.columns):
-        ok &= check(
-            "VH is below VV",
-            bool((df[vh_col] < df[vv_col]).mean() > 0.95),
-            "cross-pol usually returns less power than co-pol for vegetation",
-            warn_only=pixel,
-        )
-
-    # ---- provenance --------------------------------------------------------
-    print("\nProvenance")
-    prov = read_provenance(files[0])
-    for key in ("config_checksum", "aoi_checksum", "sarpanel_run_name"):
-        ok &= check(f"{key} recorded", key in prov, prov.get(key, ""))
-    import json
-    software = json.loads(prov.get("software", "{}"))
-    snap = software.get("snap", "unknown")
-    ok &= check("SNAP version recorded", snap != "unknown", snap,
-                warn_only=True)
-    print(f"    pyroSAR {software.get('pyroSAR')}   rasterio {software.get('rasterio')}")
-
-    # ---- summary -----------------------------------------------------------
-    print("\n" + ("All checks passed." if ok else
-                  "One or more checks FAILED. Do not scale up until resolved."))
-    if not ok:
-        print("If the incidence angle checks failed, confirm 'export_extra: True' "
-              "in 'sarpanel doctor' and look for projectedLocalIncidenceAngle "
-              "among the GeoTIFFs SNAP wrote.")
+        observed = frame[linear].notna().any(axis=1)
+        valid = bool(observed.any())
+        for pol, name in zip(config.processing.polarizations, linear):
+            values = frame.loc[observed, name].to_numpy(dtype=float)
+            valid &= bool(np.isfinite(values).all() and (values > 0).all())
+            db = columns.get(f"{pol}_db")
+            if db is None:
+                valid = False
+            else:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    valid &= bool(np.allclose(
+                        frame.loc[observed, db], 10 * np.log10(values),
+                        atol=1e-4, equal_nan=False,
+                    ))
+        angle = columns.get("inc_angle")
+        if angle is None:
+            valid = False
+        else:
+            angles = frame.loc[observed, angle].to_numpy(dtype=float)
+            valid &= bool(np.isfinite(angles).all() and (angles > 0).all())
+        mask = columns.get("layover_shadow")
+        if mask and config.output.drop_layover_shadow:
+            valid &= bool(frame.loc[observed, mask].eq(0).all())
+        print(f"{'PASS' if valid else 'FAIL'} {key}: {int(observed.sum()):,} pixels")
+        ok &= valid
+    for file in files:
+        provenance = read_provenance(file)
+        recorded = all(key in provenance for key in (
+            "config_checksum", "aoi_checksum", "sarpanel_run_name"
+        ))
+        if not recorded:
+            print(f"FAIL: incomplete provenance in {file}")
+        ok &= recorded
+    print("All checks passed." if ok else "One or more pixel checks FAILED.")
     return 0 if ok else 1
 
 

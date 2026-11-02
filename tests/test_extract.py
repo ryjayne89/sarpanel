@@ -17,6 +17,11 @@ from sarpanel.aoi import load_aoi
 from sarpanel.extract import SceneContext, SceneReader, extract_scene, polygon_window
 
 
+def pixel_measurements(frame):
+    """Read a single-scene wide output in tests without changing its pixel rows."""
+    return frame.rename(columns={name: name.split("__", 1)[0] for name in frame})
+
+
 def make_aoi(*geometries, ids=None):
     """Build an AOISet from projected geometries, declaring the CRS explicitly."""
     ids = ids or [f"field_{i}" for i in range(len(geometries))]
@@ -121,15 +126,12 @@ def test_polygon_entirely_outside_returns_none(scene):
 def test_extracted_values_match_the_synthetic_patch(scene, context, tmp_path):
     aoi = make_aoi(polygon_over_bright_patch())
     with SceneReader(scene) as reader:
-        df = extract_scene(reader, aoi, context, granularity="polygon")
+        df = pixel_measurements(extract_scene(reader, aoi, context))
 
-    assert len(df) == 1
-    row = df.iloc[0]
-    assert row["n_pixels_valid"] == 400  # 20 x 20
-    assert row["VV_mean_linear"] == pytest.approx(1.0, rel=1e-5)
-    assert row["VV_mean_db"] == pytest.approx(0.0, abs=1e-4)
-    # VH is exactly 0.2 * VV, so the ratio must be 10*log10(0.2)
-    assert row["VH_VV_ratio_db"] == pytest.approx(10 * np.log10(0.2), abs=1e-4)
+    assert len(df) == 400
+    assert df["VV_linear"].eq(1.0).all()
+    assert df["VV_db"].eq(0.0).all()
+    np.testing.assert_allclose(df["VH_db"] - df["VV_db"], 10 * np.log10(0.2), atol=1e-4)
 
 
 def test_incidence_angle_is_read_from_the_matching_grid(scene, context):
@@ -140,12 +142,12 @@ def test_incidence_angle_is_read_from_the_matching_grid(scene, context):
     """
     aoi = make_aoi(polygon_over_bright_patch())
     with SceneReader(scene) as reader:
-        df = extract_scene(reader, aoi, context, granularity="polygon")
+        df = pixel_measurements(extract_scene(reader, aoi, context))
 
     expected = np.linspace(30.0, 45.0, 100)[30:50].mean()
-    assert df.iloc[0]["inc_angle_mean"] == pytest.approx(expected, abs=1e-3)
-    assert df.iloc[0]["inc_angle_min"] == pytest.approx(np.linspace(30, 45, 100)[30], abs=1e-3)
-    assert df.iloc[0]["inc_angle_max"] == pytest.approx(np.linspace(30, 45, 100)[49], abs=1e-3)
+    assert df["inc_angle"].mean() == pytest.approx(expected, abs=1e-3)
+    assert df["inc_angle"].min() == pytest.approx(np.linspace(30, 45, 100)[30], abs=1e-3)
+    assert df["inc_angle"].max() == pytest.approx(np.linspace(30, 45, 100)[49], abs=1e-3)
 
 
 def test_misaligned_band_raises_rather_than_silently_resampling(tmp_path, scene):
@@ -165,7 +167,7 @@ def test_misaligned_band_raises_rather_than_silently_resampling(tmp_path, scene)
 def test_pixel_granularity_returns_one_row_per_pixel(scene, context):
     aoi = make_aoi(polygon_over_bright_patch())
     with SceneReader(scene) as reader:
-        df = extract_scene(reader, aoi, context, granularity="pixel")
+        df = pixel_measurements(extract_scene(reader, aoi, context))
     assert len(df) == 400
     assert {"x", "y", "VV_db", "inc_angle"} <= set(df.columns)
     assert df["VV_linear"].min() == pytest.approx(1.0)
@@ -174,7 +176,7 @@ def test_pixel_granularity_returns_one_row_per_pixel(scene, context):
 def test_default_extraction_preserves_pixel_coordinates_and_values(scene, context):
     aoi = make_aoi(polygon_over_bright_patch())
     with SceneReader(scene) as reader:
-        df = extract_scene(reader, aoi, context)
+        df = pixel_measurements(extract_scene(reader, aoi, context))
     assert len(df) == 400
     assert not df.duplicated(["aoi_id", "scene_id", "x", "y"]).any()
     assert sorted(df["x"].unique()) == pytest.approx(
@@ -197,7 +199,7 @@ def test_default_pixel_output_excludes_flagged_pixels(tmp_path, scene, context):
     bands = dict(scene)
     bands["layover_shadow"] = write_band(tmp_path / "flagged.tif", mask)
     with SceneReader(bands) as reader:
-        df = extract_scene(reader, make_aoi(polygon_over_bright_patch()), context)
+        df = pixel_measurements(extract_scene(reader, make_aoi(polygon_over_bright_patch()), context))
     assert len(df) == 200
     assert df["layover_shadow"].eq(0).all()
 
@@ -232,10 +234,11 @@ def test_scene_pipeline_writes_and_aggregates_pixels(tmp_path, scene, monkeypatc
     monkeypatch.setattr(runner, "geocode_scene", lambda **kwargs: scene)
     aoi = make_aoi(polygon_over_bright_patch())
     caps = SimpleNamespace(supports=lambda name: False)
-    result = runner.process_scene(row, aoi, cfg, None, caps, {})
+    result = runner.process_scene(row, aoi, cfg, None, caps, {"config_checksum": cfg.checksum()})
     assert result.status == "ok" and result.n_observations == 400
     df = pd.read_parquet(result.output_path)
-    assert len(df) == 400 and {"x", "y", "VV_db", "VH_db", "inc_angle"} <= set(df)
+    assert len(df) == 400 and {"x", "y"} <= set(df)
+    assert any(name.startswith("VV_db__2020-06-08__") for name in df)
     path = cfg.write(tmp_path / "config.yaml")
     assert main(["aggregate", str(path)]) == 0
     assert len(pd.read_parquet(cfg.root / "pixels_observations.parquet")) == 400
@@ -251,9 +254,9 @@ def test_layover_shadow_pixels_are_excluded(tmp_path, scene, context):
 
     aoi = make_aoi(polygon_over_bright_patch())
     with SceneReader(scene) as reader:
-        df = extract_scene(reader, aoi, context, granularity="polygon")
-    assert df.iloc[0]["n_pixels_valid"] == 200
-    assert df.iloc[0]["layover_shadow_fraction"] == pytest.approx(0.5)
+        df = pixel_measurements(extract_scene(reader, aoi, context))
+    assert len(df) == 200
+    assert df["layover_shadow"].eq(0).all()
 
 
 def test_nodata_pixels_are_excluded(tmp_path, context):
@@ -272,7 +275,7 @@ def test_nodata_pixels_are_excluded(tmp_path, context):
     poly = box(ORIGIN_X, ORIGIN_Y - 40 * RES, ORIGIN_X + 40 * RES, ORIGIN_Y)
     aoi = make_aoi(poly)
     with SceneReader(bands) as reader:
-        df = extract_scene(reader, aoi, context, granularity="polygon")
+        df = pixel_measurements(extract_scene(reader, aoi, context))
     # 40x40 window, but the left 30 columns are nodata -> 40 rows x 10 cols
-    assert df.iloc[0]["n_pixels_valid"] == 400
-    assert df.iloc[0]["valid_fraction"] == pytest.approx(0.25)
+    assert len(df) == 400
+    assert df["VV_linear"].eq(1).all()

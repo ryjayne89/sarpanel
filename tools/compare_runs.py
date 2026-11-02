@@ -1,178 +1,77 @@
 #!/usr/bin/env python3
-"""
-Compare two runs of the same scenes, field by field and date by date.
-
-Written to calibrate the processing subset buffer, and reusable afterwards as
-the benchmark evidence for any claim that an optimisation left the science
-unchanged.
-
-A subset that speeds up Terrain-Flattening is only worth having if the
-backscatter it produces matches the unsubsetted result. Terrain-Flattening
-normalises by the illuminated area computed from surrounding terrain, so a
-subset cut too close to the polygons biases the normalisation, and the bias
-appears as a near-constant multiplicative offset on every polarisation at once.
-
-    python tools/compare_runs.py \\
-        /mnt/gs21/scratch/bassolab/sarpanel_smoke/observations_nosubset \\
-        /mnt/gs21/scratch/bassolab/sarpanel_smoke/observations \\
-        --labels "no subset" "5 km buffer"
-"""
+"""Compare wide pixel time series on identical pixel and acquisition keys."""
 
 from __future__ import annotations
 
 import argparse
-import glob
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# A systematic offset above this is treated as a processing artefact rather
-# than numerical noise. Chosen well below the ~1 dB seasonal signal a crop
-# time series carries, and well above grid-resampling differences.
-TOLERANCE_DB = 0.05
 
-KEYS = ["aoi_id", "date"]
-COMPARE = [
-    "VV_db",
-    "VH_db",
-    "inc_angle",
-    "inc_angle_mean",
-    "inc_angle_std",
-    "n_pixels_valid",
-    "enl_empirical",
-    "VV_mean_db",
-    "VH_mean_db",
-    "VH_VV_ratio_db",
-]
+def load(directory):
+    from sarpanel.observations import combine_pixel_frames, read_pixel_file
 
-
-def load(directory: str) -> pd.DataFrame:
-    files = sorted(glob.glob(f"{directory}/**/*.parquet", recursive=True))
+    files = sorted(Path(directory).rglob("*.parquet"))
     if not files:
-        raise SystemExit(f"No parquet files under {directory}")
-    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    return df.sort_values(KEYS).reset_index(drop=True)
+        raise ValueError(f"No pixel files under {directory}")
+    return combine_pixel_frames([read_pixel_file(file) for file in files])
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("baseline")
-    ap.add_argument("candidate")
-    ap.add_argument("--labels", nargs=2, default=["baseline", "candidate"])
-    ap.add_argument("--tolerance", type=float, default=TOLERANCE_DB)
-    args = ap.parse_args()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from sarpanel.observations import PIXEL_KEYS
 
-    a, b = load(args.baseline), load(args.candidate)
-    lab_a, lab_b = args.labels
-
-    pixel = {"x", "y"} <= set(a.columns)
-    if pixel != ({"x", "y"} <= set(b.columns)):
-        raise SystemExit("Cannot compare pixel observations with polygon summaries")
-    keys = ["aoi_id", "scene_id", "date"]
-    if not set(keys) <= set(a.columns) or not set(keys) <= set(b.columns):
-        raise SystemExit("Scene identifiers are required to match acquisitions safely")
-    if pixel:
-        keys += ["x", "y"]
-    if a.duplicated(keys).any() or b.duplicated(keys).any():
-        raise SystemExit("Duplicate observation keys; comparison would multiply rows")
-    merged = a.merge(b, on=keys, suffixes=("_a", "_b"), validate="one_to_one")
-    print(f"\n{lab_a}: {len(a)} rows   {lab_b}: {len(b)} rows   matched: {len(merged)}")
-    if merged.empty:
-        raise SystemExit("No rows matched on AOI, scene, and pixel coordinates (when present)")
-
-    print(f"\n{'column':18} {'mean diff':>11} {'median':>9} {'max abs':>9} "
-          f"{'sd':>8}  verdict")
-    print("-" * 72)
-
-    problems = []
-    for col in COMPARE:
-        ca, cb = f"{col}_a", f"{col}_b"
-        if ca not in merged or cb not in merged:
-            continue
-        diff = (merged[cb] - merged[ca]).astype(float)
-        diff = diff[np.isfinite(diff)]
-        if diff.empty:
-            continue
-
-        is_db = col.endswith("_db")
-        systematic = abs(diff.mean())
-        if is_db:
-            bad = systematic > args.tolerance
-            verdict = "OFFSET" if bad else "ok"
-            if bad:
-                problems.append((col, diff.mean()))
-        else:
-            verdict = ""
-
-        print(f"{col:18} {diff.mean():>11.4f} {diff.median():>9.4f} "
-              f"{diff.abs().max():>9.4f} {diff.std():>8.4f}  {verdict}")
-
-    # Normalize comparison column names for the shared diagnostics below.
-    if pixel:
-        merged = merged.rename(columns={
-            f"{pol}_db_{side}": f"{pol}_mean_db_{side}"
-            for pol in ("VV", "VH") for side in ("a", "b")
-        })
-
-    # A shared offset across polarisations points at the radiometric
-    # normalisation rather than at geometry or resampling.
-    if {"VV_mean_db_a", "VH_mean_db_a"} <= set(merged.columns):
-        dvv = (merged["VV_mean_db_b"] - merged["VV_mean_db_a"]).mean()
-        dvh = (merged["VH_mean_db_b"] - merged["VH_mean_db_a"]).mean()
-        dratio = abs(dvv - dvh)
-        print(f"\nVV offset {dvv:+.4f} dB, VH offset {dvh:+.4f} dB, "
-              f"difference {dratio:.4f} dB")
-        if abs(dvv) > args.tolerance and dratio < args.tolerance:
-            print(
-                "  Both polarisations shifted by nearly the same amount, so the\n"
-                "  VH/VV ratio is preserved. That is the signature of the\n"
-                "  gamma0 normalisation changing, not of a geometry or masking\n"
-                "  error. Terrain-Flattening divides by an illuminated area\n"
-                "  derived from surrounding terrain, and a subset cut too close\n"
-                "  to the polygons truncates that neighbourhood.\n"
-                "  Remedy: raise subset_buffer_m and compare again."
-            )
-        elif abs(dvv) > args.tolerance:
-            print(
-                "  The polarisations shifted by different amounts, so the ratio\n"
-                "  changed too. That points at masking or geometry rather than\n"
-                "  at radiometric normalisation."
-            )
-
-    # Per-scene detail: a single bad scene and a uniform bias need different fixes.
-    if "VV_mean_db_a" in merged:
-        print("\nPer-date VV offset")
-        per_date = (
-            (merged["VV_mean_db_b"] - merged["VV_mean_db_a"])
-            .groupby(merged["date"])
-            .agg(["mean", "std", "count"])
-        )
-        for date, row in per_date.iterrows():
-            sd = 0.0 if pd.isna(row["std"]) else row["std"]
-            print(f"  {date}  {row['mean']:+.4f} dB  (sd {sd:.4f}, n {int(row['count'])})")
-        spread = per_date["mean"].max() - per_date["mean"].min()
-        print(f"  spread across dates: {spread:.4f} dB")
-        if spread < args.tolerance:
-            print("  A uniform offset across every date is a systematic bias, "
-                  "not a per-scene failure.")
-
-    print()
-    if problems:
-        print("VERDICT: the subset changed the radiometry. Do not scale up.")
-        for col, value in problems:
-            print(f"  {col} shifted by {value:+.4f} dB")
-        print("\n  Raise subset_buffer_m (try 20000), rerun, and compare again.")
-        print("  If the offset shrinks with a larger buffer, it is an edge")
-        print("  effect in Terrain-Flattening and the buffer simply needs to be")
-        print("  wide enough. If it does not shrink, subsetting interacts with")
-        print("  the normalisation in a way that cannot be tuned away, and")
-        print("  terrain_flattening and subset_to_aoi should not be combined.")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("baseline")
+    parser.add_argument("candidate")
+    parser.add_argument("--labels", nargs=2, default=["baseline", "candidate"])
+    parser.add_argument("--tolerance", type=float, default=0.05)
+    args = parser.parse_args()
+    try:
+        a, b = load(args.baseline), load(args.candidate)
+    except (ValueError, OSError) as exc:
+        print(f"Cannot compare: {exc}")
         return 1
-
-    print("VERDICT: radiometry preserved within tolerance.")
-    print(f"  All decibel columns agree to within {args.tolerance} dB on average.")
-    return 0
+    a, b = a.set_index(PIXEL_KEYS).sort_index(), b.set_index(PIXEL_KEYS).sort_index()
+    if not a.index.equals(b.index):
+        print("FAIL: pixel coverage differs between runs")
+        return 1
+    if set(a.columns) != set(b.columns):
+        print("FAIL: acquisition or measurement columns differ between runs")
+        return 1
+    print(f"{args.labels[0]}: {len(a):,} pixels; {args.labels[1]}: {len(b):,} pixels; "
+          f"matched: {len(a):,}")
+    ok = True
+    for name in a.columns:
+        if not a[name].isna().equals(b[name].isna()):
+            print(f"FAIL: missing-observation pattern differs in {name}")
+            ok = False
+            continue
+        if not pd.api.types.is_numeric_dtype(a[name]):
+            if not a[name].fillna("").equals(b[name].fillna("")):
+                print(f"FAIL: acquisition metadata differs in {name}")
+                ok = False
+            continue
+        observed = a[name].notna()
+        diff = (b.loc[observed, name] - a.loc[observed, name]).to_numpy(dtype=float)
+        if not len(diff):
+            continue
+        if not np.isfinite(diff).all():
+            ok = False
+            continue
+        field = name.split("__", 1)[0]
+        if field.endswith("_db"):
+            offset = float(diff.mean())
+            passed = abs(offset) <= args.tolerance
+            print(f"{'PASS' if passed else 'FAIL'} {name}: mean offset {offset:+.4f} dB; "
+                  f"max absolute {np.abs(diff).max():.4f} dB")
+            ok &= passed
+    print("VERDICT: radiometry preserved within tolerance." if ok else
+          "VERDICT: pixel coverage, metadata, or radiometry changed.")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

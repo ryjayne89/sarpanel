@@ -116,7 +116,7 @@ def process_scene(
     # Completion check first, before any transfer or processing.
     if out_path.exists() and out_path.stat().st_size > 0:
         try:
-            n_rows = validate_observation_file(out_path, config.output.granularity)
+            n_rows = validate_observation_file(out_path, config.checksum())
         except Exception as exc:
             log.error("Cannot reuse %s: %s", scene_id, exc)
             return SceneResult(scene_id, "failed", error=str(exc))
@@ -179,15 +179,22 @@ def process_scene(
         preload = len(aoi) > 5000
 
         with SceneReader(bands, preload=preload) as reader:
+            from rasterio.crs import CRS
+
+            from .observations import canonicalize_pixel_coordinates, validate_pixel_grid
+
+            if reader.crs != CRS.from_user_input(config.processing.target_crs):
+                raise ValueError("SNAP output CRS differs from processing.target_crs")
+            validate_pixel_grid(reader.transform, config.processing.target_spacing_m)
             df = extract_scene(
                 reader=reader,
                 aoi=aoi,
                 context=context,
-                granularity=config.output.granularity,
                 min_valid_pixels=config.output.min_valid_pixels,
-                enl_trim_percentile=config.output.enl_trim_percentile,
                 drop_layover_shadow=config.output.drop_layover_shadow,
             )
+            if not df.empty:
+                df = canonicalize_pixel_coordinates(df, config.processing.target_spacing_m)
 
         if df.empty:
             _cleanup(geocode_dir)

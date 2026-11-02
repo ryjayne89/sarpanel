@@ -86,7 +86,6 @@ processing:
 
 output:
   root: "/mnt/gs21/scratch/bassolab/sarpanel_smoke_control"
-  granularity: pixel
   min_valid_pixels: 16
   drop_layover_shadow: true
 

@@ -106,14 +106,17 @@ processing:
 output:
   root: "/mnt/gs21/scratch/bassolab/rjayne/sarpanel_mi_2016_2023"
 
-  # One row per pixel per field per acquisition, at the 10 m target spacing.
+  # Scene files retain one row per pixel per field, at the 10 m spacing.
+  # Aggregate joins acquisitions side by side into dated columns.
   # This is what the within-field yield stability zone work needs: zones are
   # defined by spatial structure inside a field, which a polygon mean cannot
   # express.
   #
   # Measured from the catalog: 692 scenes touching an average of 153 fields
   # each gives about 105,800 field-observations, and at a median 2,064 pixels
-  # per field that is roughly 220 million rows. Compressed with zstd and
+  # per field that is roughly 220 million pixel-acquisition measurements
+  # across scene files. The combined wide table has fewer rows and more columns.
+  # Compressed with zstd and
   # partitioned by month this runs to tens of gigabytes.
   #
   # Each row carries x, y, VV and VH in both linear power and decibels, the
@@ -121,18 +124,16 @@ output:
   # scene-level geometry columns.
   #
   # The ENL, coefficient of variation, and standard error columns are aggregate
-  # statistics and are not written at this granularity. Compute them when
+  # statistics and are not written in the pixel-only output. Compute them when
   # collapsing pixels to a field mean, and aggregate in LINEAR POWER, never in
   # decibels: averaging in the log domain is biased low, and the bias grows
   # with within-field heterogeneity, which is the quantity being measured.
-  granularity: pixel
 
   # The smallest retained field holds about 600 pixels at 10 m, so this
   # threshold excludes nothing here. It stays in as a guard against scenes that
   # clip a field at the swath edge.
   min_valid_pixels: 16
 
-  enl_trim_percentile: 2.0          # guards against farm buildings, open water
   drop_layover_shadow: true
   compression: zstd
   partition_by_date: true

@@ -1,19 +1,20 @@
 # sarpanel
 
-Analysis-ready **Sentinel-1 pixel observations**, written to **Parquet**,
+Analysis-ready **Sentinel-1 pixel time series**, written to **Parquet**,
 with spatial coordinates, backscatter, and acquisition geometry retained.
 
 Give the program an area of interest (one polygon or many) and a date range.
 It queries the Alaska Satellite Facility (ASF) archive, processes matching
 Sentinel-1 scenes with [ESA SNAP](https://step.esa.int/main/toolboxes/snap/)
 through [pyroSAR](https://github.com/johntruckenbrodt/pyroSAR), and writes
-**one row per valid pixel per AOI per scene (acquisition granule)** by default.
-The polygons identify where to extract pixels; individual pixel values and
-locations are preserved for spatial and temporal analysis.
+**one row per pixel per AOI, with dated columns for each acquisition**.
+Each scene file contains that scene's pixel measurements; `aggregate` joins
+acquisitions side by side on the pixel coordinates. Polygons identify the area
+to extract. They are never averaged into one row.
 
 This tool was previously called `sar2parquet`. The repository, Python import,
-and command-line program are now named `sarpanel`. The default output remains
-pixel-level. Field/polygon summaries are an optional, explicitly selected mode.
+and command-line program are now named `sarpanel`. Output is pixel-only.
+Polygon-summary output has been removed.
 
 ## Start here: use a terminal
 
@@ -233,7 +234,6 @@ processing:
 
 output:
   root: "./runs/my_run"
-  granularity: pixel
 
 n_shards: 1
 ```
@@ -246,7 +246,6 @@ n_shards: 1
 | `processing.target_crs` | Choose a projected CRS in metres suitable for your area. The example's `EPSG:32616` is UTM zone 16N; it is not a global default. |
 | `processing.target_spacing_m` | Output pixel spacing in metres. Start with `10.0` for this GRD workflow. |
 | `output.root` | Choose a new result directory for each different area, date range, or processing configuration. |
-| `output.granularity` | Keep `pixel` to preserve each valid pixel and its coordinates. `polygon` is an optional summary mode. |
 | `n_shards` | Keep `1` on a laptop and run `--shard 0`. |
 
 For bounding boxes, the order is **minimum longitude, minimum latitude,
@@ -335,7 +334,7 @@ Do not plan one configuration and run another.
 Outputs for the demo land in:
 
 ```text
-runs/local_demo_pixel/
+runs/local_demo_wide/
 ├── manifest/                        scene manifest, resolved AOI, saved config
 ├── work/                            downloads and SNAP intermediates
 ├── observations/                    one Parquet file per processed scene
@@ -352,11 +351,11 @@ few valid pixels overlap the polygon.
 To inspect the combined table directly in the terminal:
 
 ```powershell
-conda run --no-capture-output -n sarpanel python -c "import pandas as pd; df = pd.read_parquet('runs/local_demo_pixel/local_demo_observations.parquet'); print(df[['aoi_id', 'scene_id', 'date', 'x', 'y', 'relative_orbit', 'inc_angle', 'VV_db', 'VH_db']].head())"
+conda run --no-capture-output -n sarpanel python -c "import pandas as pd; df = pd.read_parquet('runs/local_demo_wide/local_demo_observations.parquet'); print(df.head()); print(df.columns.tolist())"
 ```
 
-Observation rows use **`date`**; the scene manifest uses `acquisition_date`.
-The example path above is for the demo. Your combined table is written to
+Acquisition dates and scene IDs appear in measurement column names; the scene
+manifest uses `acquisition_date`. The example path above is for the demo. Your combined table is written to
 `<output.root>/<name>_observations.parquet`.
 
 For a Michigan cropland smoke test, populated incidence angles around 29–46
@@ -397,8 +396,9 @@ For analysis, read the output with pandas:
 ```python
 import pandas as pd
 
-df = pd.read_parquet("runs/local_demo_pixel/local_demo_observations.parquet")
-print(df[["aoi_id", "date", "x", "y", "inc_angle", "VV_db", "VH_db"]].head())
+df = pd.read_parquet("runs/local_demo_wide/local_demo_observations.parquet")
+print(df.head())
+print(df.filter(regex=r"^VV_db__").columns.tolist())
 ```
 
 Use an absolute path if your notebook is saved outside the repository root.
@@ -414,7 +414,7 @@ All commands below can be invoked with the explicit prefix used above:
 | `plan CONFIG` | Searches ASF and writes a manifest without downloading scene archives |
 | `run CONFIG --shard 0 --strict` | Downloads and processes one shard; reports failures through its exit code |
 | `status CONFIG` | Summarizes saved per-shard outcomes |
-| `aggregate CONFIG` | Concatenates per-scene files into one table, preserving individual pixel rows |
+| `aggregate CONFIG` | Outer-joins acquisitions into one row per pixel with dated columns |
 
 Once `conda activate sarpanel` is verified to select the correct Python,
 `sarpanel ...` is the shorter equivalent. `run --help` lists the flags.
@@ -433,57 +433,71 @@ sbatch --array=0-0 slurm/run_shard.sb configs/your_run.yaml
 Set the array range to `0` through `n_shards - 1`. Local laptop runs do not use
 these SLURM commands.
 
-## What a pixel row contains
+## Output layout: one pixel row, dates across columns
 
-| Field | Meaning |
+A combined table has one row per pixel within an AOI. `aoi_id`, `x`, and `y`
+identify that pixel. SNAP is instructed to use the same projected grid, pixel
+spacing, and zero grid origin across scenes so observations can be joined by
+location, using [SNAP standard-grid alignment](https://github.com/senbox-org/s1tbx/blob/master/s1tbx-commons/src/main/java/org/esa/s1tbx/commons/CRSGeoCodingHandler.java). The runner checks the output grid and CRS before extraction.
+
+Every measurement and acquisition-metadata column uses this naming pattern:
+
+```text
+<field>__<YYYY-MM-DD>__<scene_id>
+```
+
+For example, using shortened scene IDs only to make this illustration readable:
+
+| aoi_id | x | y | VV_db__2020-06-08__scene_A | VV_db__2020-06-20__scene_B |
+|---|---|---|---|---|
+| field_1 | 500005 | 4500005 | -10.2 | -9.8 |
+| field_1 | 500015 | 4500005 | -11.4 | missing |
+
+Actual columns use the full scene ID. The scene ID is necessary because two
+granules can cover the same pixel on the same date. Both measurements are
+retained in separate columns, with no averaging and no silent overwriting.
+
+| Field before the date/scene suffix | Meaning |
 |---|---|
-| `aoi_id` | Field or AOI containing this pixel |
-| `scene_id`, `date`, `start_time` | Acquisition granule and time; `date` alone is not a unique acquisition key |
-| `x`, `y` | Pixel-center coordinates in `processing.target_crs` (projected metres) |
-| `VV_linear`, `VH_linear` | Per-pixel backscatter in linear power for the requested polarizations |
+| `VV_linear`, `VH_linear` | Pixel backscatter in linear power for the requested polarizations |
 | `VV_db`, `VH_db` | The same pixel values in decibels |
-| `inc_angle` | Terrain-corrected projected local incidence angle at this pixel |
-| `layover_shadow` | Mask value, when exported; flagged pixels are excluded by default |
-| `looks_nominal`, `looks_range`, `looks_azimuth` | Scene-level nominal-look estimates repeated on pixel rows |
-| `relative_orbit`, `orbit_direction`, `absolute_orbit` | Track and viewing geometry |
+| `inc_angle` | Projected local incidence angle at the pixel |
+| `layover_shadow` | Exported mask value; flagged pixels are excluded by default |
+| `date`, `start_time`, `scene_id` | Acquisition timing and granule identity |
+| `relative_orbit`, `orbit_direction`, `absolute_orbit` | Track and viewing geometry for that acquisition |
 | `platform`, `product_type`, `frame_number` | Acquisition metadata |
+| `looks_nominal`, `looks_range`, `looks_azimuth` | Nominal-look estimates for that acquisition |
 
-Only valid pixels are written. Overlapping AOIs can contain the same physical
-pixel, with a separate row under each `aoi_id`. Adjacent or overlapping scenes
-on the same date remain separate through `scene_id`; they are not deduplicated
-by date. A pixel observation is identified within an output by
-`aoi_id`, `scene_id`, `x`, and `y`.
+`x` and `y` are pixel-center coordinates in `processing.target_crs`, in metres.
+Overlapping AOIs can contain the same physical pixel under different `aoi_id`
+values. The spatial identity is therefore `aoi_id`, `x`, and `y`.
 
-`aggregate` **stacks scene files; it does not average pixels into polygons**.
-The current aggregate command loads the combined table into memory. For very
-large studies, work with per-scene Parquet files or a Parquet dataset instead
-of combining the entire study in RAM.
+Only valid pixels are extracted from each acquisition. The combined table uses
+an **outer join**: it includes pixels observed on any acquisition, and leaves
+missing values for dates on which a pixel had no valid measurement.
+`aggregate` does not compute spatial means, interpolate missing observations,
+or collapse same-date granules. Polygon means, empirical ENL, and uncertainty
+of polygon averages are not produced by this package.
 
-### Optional polygon summaries
+The aggregate command currently joins the study in memory. A wide study can
+have many rows and many dated columns; for larger studies, retain per-scene
+Parquet files and process spatial subsets rather than loading everything at once.
 
-Set `output.granularity: polygon` explicitly, with a separate `output.root`,
-only when a field summary is wanted. This mode writes one row per AOI per
-scene with columns such as `VV_mean_db`, `VH_mean_db`, `inc_angle_mean`,
-`n_pixels_valid`, `enl_empirical`, `enl_efficiency`, `*_cv`, `*_se_db`, and
-`layover_shadow_fraction`. These aggregate statistics are **not columns in
-the default pixel output**. Means are computed in linear power before
-conversion to decibels. You can also compute summaries later from pixel data,
-choosing your own spatial grouping and uncertainty assumptions.
+### Migrating earlier output
 
-### Migrating an earlier polygon-mode run
+Earlier versions supported polygon summaries and long-format pixel files with
+one row per pixel per acquisition. Both old layouts are rejected by the new
+runner and aggregation checks. Legacy `output.granularity: pixel` is accepted
+when reading an old YAML, but it is no longer a selectable output mode.
+`output.granularity: polygon` raises an error.
 
-Previously, the package default and most sample configs selected polygon
-summaries. If a demo produced just four rows for four scenes, those were
-polygon summaries, not the intended pixel dataset. Existing summaries cannot
-be expanded back into the original pixel measurements.
-
-The demo now writes to **`runs/local_demo_pixel/`**, preserving any older
-`runs/local_demo/` results. After updating, rerun `plan`, then `run`, using
-`configs/local_demo.yaml`. This performs a new pixel extraction and may
-redownload scenes and run SNAP again. Merely changing the YAML or running
-`aggregate` on old summary files cannot recover the pixels. The runner and
-aggregate command reject files whose schema does not match the selected
-output granularity; use a new `output.root` for your own migrated runs too.
+The demo now writes to **`runs/local_demo_wide/`**, preserving older
+`runs/local_demo/` and `runs/local_demo_pixel/` results. After updating, rerun
+`plan`, then `run`, using `configs/local_demo.yaml`; finally run `aggregate`
+to join dates across columns. This may redownload scenes and run SNAP again,
+including grid alignment. Polygon summaries cannot be expanded back into
+pixel data. Use a new `output.root` when migrating your own study, and do not
+mix old and new scene files.
 
 ## Choices that change the result
 
@@ -502,12 +516,12 @@ because result order is not stable.
 direction. Naming files only by date would drop one of them.
 
 **Backscatter is processed in linear power.** Pixel output retains both
-linear power and its decibel conversion. When computing a field mean, average
+linear power and its decibel conversion in dated columns. For any downstream summaries, average
 linear power first, then convert that mean to decibels. Averaging decibels
 biases the result low. The package refuses `scaling: dB` at geocode time.
 
 **A finished scene is detected before it is downloaded again.** Rerunning
-`run` continues the unfinished scenes.
+`run` continues unfinished scenes after validating the pixel-only schema.
 
 **SLC and GRD are both supported.** `product_type: GRD` is the right first
 test: smaller downloads, faster processing. `product_type: SLC` keeps phase

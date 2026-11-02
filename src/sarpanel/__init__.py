@@ -1,10 +1,10 @@
 """
-sarpanel: analysis-ready Sentinel-1 pixel observations within AOI polygons.
+sarpanel: Sentinel-1 pixel time series within AOI polygons.
 
-By default, produces one record per valid pixel per AOI per scene, carrying
-coordinates, linear and decibel backscatter, projected local incidence angle,
-nominal looks, layover/shadow status, and orbit track. Polygon summaries with
-empirical speckle statistics are available as an explicit option.
+Produces one row per pixel, with dated columns for each acquisition's
+backscatter, incidence angle, mask, and metadata. Aggregation outer-joins
+acquisitions on a shared projected pixel grid. Polygon summaries are not
+supported.
 """
 
 __version__ = "0.1.0"

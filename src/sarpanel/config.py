@@ -45,9 +45,7 @@ class SearchConfig:
 @dataclass
 class OutputConfig:
     root: str
-    granularity: str = "pixel"
     min_valid_pixels: int = 4
-    enl_trim_percentile: float | None = 2.0
     drop_layover_shadow: bool = True
     compression: str = "zstd"
     partition_by_date: bool = True
@@ -75,12 +73,20 @@ class RunConfig:
         if missing:
             raise ValueError(f"Config is missing required section(s): {missing}")
 
+        output = dict(raw["output"])
+        if output.pop("granularity", "pixel") != "pixel":
+            raise ValueError(
+                "Polygon-summary output has been removed. Output is pixel-only; "
+                "remove output.granularity from the configuration."
+            )
+        output.pop("enl_trim_percentile", None)  # legacy summary-only setting
+
         cfg = cls(
             name=raw["name"],
             aoi=AOIConfig(**raw["aoi"]),
             search=SearchConfig(**raw["search"]),
             processing=ProcessingConfig(**raw.get("processing", {})),
-            output=OutputConfig(**raw["output"]),
+            output=OutputConfig(**output),
             n_shards=int(raw.get("n_shards", 1)),
         )
         cfg._source_path = source_path
@@ -88,8 +94,6 @@ class RunConfig:
         return cfg
 
     def validate(self) -> None:
-        if self.output.granularity not in ("pixel", "polygon"):
-            raise ValueError("output.granularity must be 'pixel' or 'polygon'")
         if self.search.start_date > self.search.end_date:
             raise ValueError("search.start_date is after search.end_date")
         if self.n_shards < 1:
@@ -101,11 +105,6 @@ class RunConfig:
                 "granules are roughly five times the size of GRD, and stacking "
                 "across tracks mixes viewing geometries. Consider restricting "
                 "to specific tracks."
-            )
-        if self.output.granularity == "pixel":
-            log.warning(
-                "Pixel granularity writes one row per pixel per acquisition. "
-                "Estimate the volume before launching a multi-year run."
             )
 
     def as_dict(self) -> dict[str, Any]:
