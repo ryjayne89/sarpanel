@@ -12,6 +12,83 @@ Each scene file contains that scene's pixel measurements; `aggregate` joins
 acquisitions side by side on the pixel coordinates. Polygons identify the area
 to extract. They are never averaged into one row.
 
+The polygons can be anything with a boundary. Nothing downstream inspects what
+a polygon represents, so a run over one polygon and a run over 300,000 differ
+only in how many rows come out. Accepted inputs are any vector file GeoPandas
+can read, a WKT string, a bounding box written as `minx,miny,maxx,maxy`, or a
+list of bounding boxes.
+
+## What this is for
+
+Sentinel-1 has imaged the entire land surface every 6 to 12 days since 2014,
+through cloud and darkness, and the archive is free. The obstacle has never been
+the data. It is that turning a decade of radar scenes into a table you can model
+takes a working SNAP installation, a catalog search that does not silently drop
+scenes, correct handling of terrain and radiometry, and a way to keep track of
+which pixel came from where under which viewing geometry. `sarpanel` is that
+middle layer.
+
+Because it makes no assumption about what the polygons are, the same pipeline
+serves problems that are usually handled by separate tooling.
+
+| Domain | What the polygons are | What the time series supports |
+| --- | --- | --- |
+| Agriculture | Parcels, management zones, trial plots | Crop type, phenology, biomass accumulation, harvest and tillage dates, within-parcel variability |
+| Land use and land cover change | Administrative units, concession boundaries, sample frames | Forest loss and regrowth, conversion to cropland, wetland drainage, encroachment |
+| Infrastructure | Building footprints, road and rail corridors, dams, pipelines, port facilities | Construction progress, subsidence-prone surfaces, activity at facilities, change after an event |
+| Water and cryosphere | Reservoirs, floodplains, river reaches, glacier termini, sea ice zones | Inundation extent and timing, reservoir drawdown, melt onset, terminus retreat |
+| Hazards and response | Burn perimeters, landslide scars, earthquake-affected districts | Damage proxy mapping, pre-event baselines, recovery trajectories |
+| Mining and extraction | Pit boundaries, tailings facilities, well pads | Footprint expansion, surface disturbance, activity monitoring |
+| Calibration and method work | Corner reflector sites, homogeneous reference areas | Radiometric stability, look-count verification, speckle characterization |
+
+Radar is well suited to all of these for the same reason: it measures surface
+geometry, roughness, and moisture rather than reflected sunlight, so it sees
+through cloud, works at night, and responds to physical structure. The cost is
+that it needs more careful handling than optical imagery, which is most of what
+this package does for you.
+
+### What it does that a raster pipeline does not
+
+Several good tools already produce calibrated Sentinel-1 rasters, among them
+HyP3, pyroSAR itself, and the OPERA RTC products. They stop at imagery and leave
+you to sample it, which is where acquisition metadata usually gets discarded.
+
+`sarpanel` ends at a table instead, and every row keeps the conditions it was
+measured under.
+
+- **Per-pixel coordinates on a fixed, snapped grid**, so a pixel is the same
+  pixel across years and the time series is a real panel rather than a stack of
+  near-misses.
+- **Projected local incidence angle per acquisition**, taken from the
+  terrain-correction output band rather than interpolated from tie points.
+  Backscatter depends on viewing angle, and observations from different orbit
+  tracks arrive at angles that can differ by 9 degrees or more, so an analysis
+  that ignores this is fitting geometry as if it were signal.
+- **Orbit track, platform, and timing**, so observations can be conditioned on
+  viewing geometry instead of pooled blindly.
+- **Layover and shadow masks**, which mark pixels that are not measurements at
+  all.
+- **The pieces needed to quantify precision**, covered under
+  [Looks, speckle, and precision](#looks-speckle-and-precision). Polygon size
+  and processing history determine how reliable an estimate is, and the package
+  records what is needed to weight observations accordingly rather than treating
+  them as equally informative.
+- **Provenance in every file**, including software versions, the DEM used, and
+  the full run configuration, so a result stays traceable after the file leaves
+  the directory it was written in.
+- **No averaging inside polygons.** Polygons say where to extract, not what to
+  collapse, so within-polygon spatial structure survives for sub-polygon
+  analysis. Aggregate later if you want to, with the tools in
+  `sarpanel.radiometry`.
+
+### Scale it has been run at
+
+The pipeline has processed a full Sentinel-1 SLC archive over a 125 by 180 km
+area: 692 scenes spanning 2016 to 2023 across two orbit tracks, 327 polygons,
+347 distinct acquisition dates, and roughly 259 million pixel observations,
+with 691 of 692 scenes completing. It runs on a laptop for a single polygon and
+on a SLURM array for an archive, from the same configuration file.
+
 This tool was previously called `sar2parquet`. The repository, Python import,
 and command-line program are now named `sarpanel`. Output is pixel-only.
 Polygon-summary output has been removed.
@@ -59,13 +136,13 @@ Open PowerShell or an Anaconda Prompt where `conda --version` works.
 Choose a parent directory for the project, then run:
 
 ```powershell
-git clone https://github.com/Dev-Arnab/sarpanel.git
+git clone https://github.com/ryjayne89/sarpanel.git
 cd sarpanel
 conda env create -f environment.yml --solver libmamba -v
 ```
 
 You must be inside the cloned repository: it contains both `environment.yml`
-and `pyproject.toml`. A directory containing only notebooks or field data is
+and `pyproject.toml`. A directory containing only notebooks or input data is
 not the repository.
 
 Environment creation is a one-time step. It resolves compatible package
@@ -199,7 +276,7 @@ the software does not select your own study area or dates.
 
 For the first installation check, you can leave `configs/local_demo.yaml`
 unchanged. It uses a small box in central Michigan and June 2020 GRD data, with
-no field file required. For your own study, copy it first:
+no vector file required. For your own study, copy it first:
 
 ```powershell
 Copy-Item configs/local_demo.yaml configs/my_run.yaml
@@ -240,7 +317,7 @@ n_shards: 1
 
 | Setting | What to change |
 |---|---|
-| `name` | Choose a short run name, such as `my_fields_2020`. |
+| `name` | Choose a short run name, such as `my_sites_2020`. |
 | `aoi.source` | Enter your bounding box in longitude/latitude, or the path to your polygon file. |
 | `search.start_date`, `search.end_date` | Set the study period using quoted `YYYY-MM-DD` dates. Start with a short range. |
 | `processing.target_crs` | Choose a projected CRS in metres suitable for your area. The example's `EPSG:32616` is UTM zone 16N; it is not a global default. |
@@ -260,8 +337,8 @@ Replace the `aoi` section with, for example:
 
 ```yaml
 aoi:
-  source: "D:/fields/my_fields.gpkg"
-  id_column: "field_id"  # Replace with an actual column in your file.
+  source: "D:/aoi/my_polygons.gpkg"
+  id_column: "site_id"  # Replace with an actual column in your file.
 ```
 
 GeoPackage, GeoJSON, Shapefile, and GeoParquet inputs are supported. A WKT
@@ -269,11 +346,11 @@ polygon string can also be used as `source`. File inputs must have a CRS.
 Use forward slashes in Windows YAML paths, as above, to avoid backslash escapes
 inside double-quoted strings.
 
-`id_column` selects the column identifying your fields. It is optional: when
+`id_column` selects the column identifying your polygons. It is optional: when
 omitted, sarpanel looks for a suitable identifier or generates one. Optional
 `layer`, `where`, and `min_area_m2` settings select a layer, filter attributes,
-and exclude small polygons. For example, `where: "farm_name == 'my_farm'"`
-requires a `farm_name` column in the input file.
+and exclude small polygons. For example, `where: "region == 'north'"`
+requires a `region` column in the input file.
 
 All relative input and output paths are resolved from the directory where you
 run the command, not from the YAML file's directory. Run from the repository
@@ -358,9 +435,9 @@ Acquisition dates and scene IDs appear in measurement column names; the scene
 manifest uses `acquisition_date`. The example path above is for the demo. Your combined table is written to
 `<output.root>/<name>_observations.parquet`.
 
-For a Michigan cropland smoke test, populated incidence angles around 29–46
+For the Michigan cropland smoke test, populated incidence angles around 29–46
 degrees, finite pixel backscatter, and valid spatial coordinates are useful
-initial checks. A scene covering a field should yield many pixel rows. Expected
+initial checks. A scene covering a polygon should yield many pixel rows. Expected
 backscatter depends on the land cover, season, and processing; an error-free run is not a substitute for
 checking the measurements.
 
@@ -443,21 +520,21 @@ location, using [SNAP standard-grid alignment](https://github.com/senbox-org/s1t
 Every measurement and acquisition-metadata column uses this naming pattern:
 
 ```text
-<field>__<YYYY-MM-DD>__<scene_id>
+<measurement>__<YYYY-MM-DD>__<scene_id>
 ```
 
 For example, using shortened scene IDs only to make this illustration readable:
 
 | aoi_id | x | y | VV_db__2020-06-08__scene_A | VV_db__2020-06-20__scene_B |
 |---|---|---|---|---|
-| field_1 | 500005 | 4500005 | -10.2 | -9.8 |
-| field_1 | 500015 | 4500005 | -11.4 | missing |
+| site_1 | 500005 | 4500005 | -10.2 | -9.8 |
+| site_1 | 500015 | 4500005 | -11.4 | missing |
 
 Actual columns use the full scene ID. The scene ID is necessary because two
 granules can cover the same pixel on the same date. Both measurements are
 retained in separate columns, with no averaging and no silent overwriting.
 
-| Field before the date/scene suffix | Meaning |
+| Measurement before the date/scene suffix | Meaning |
 |---|---|
 | `VV_linear`, `VH_linear` | Pixel backscatter in linear power for the requested polarizations |
 | `VV_db`, `VH_db` | The same pixel values in decibels |
@@ -498,6 +575,119 @@ to join dates across columns. This may redownload scenes and run SNAP again,
 including grid alignment. Polygon summaries cannot be expanded back into
 pixel data. Use a new `output.root` when migrating your own study, and do not
 mix old and new scene files.
+
+## Looks, speckle, and precision
+
+Backscatter from a polygon is an estimate, and its precision depends on how
+many independent looks went into it. `sarpanel` records the pieces needed to
+quantify that and leaves the choice of whether to use them to you. Nothing in
+the default pipeline applies a speckle model on your behalf.
+
+### What is always recorded
+
+Every pixel row carries the processing parameters that bound the look count.
+
+| Column | Meaning |
+| --- | --- |
+| `looks_nominal` | Looks implied by the configuration: output pixel area over native resolution cell area, floored at one per axis |
+| `looks_range`, `looks_azimuth` | The per-axis contributions to that product |
+
+These are geometry rather than measurement. They state how many native
+resolution cells fit inside an output pixel, which is an upper bound on
+independence. The measured value is almost always lower, because spectral
+overlap between looks, range oversampling, and interpolation during terrain
+correction all introduce correlation that a ratio of areas cannot see.
+
+Resolution is used rather than sample spacing, deliberately. Sentinel-1 range
+samples are spaced 2.3 m apart inside a 2.7 m resolution cell, so counting
+samples would credit a 10 m pixel with 4.35 range looks when it can hold at
+most 3.70 independent ones.
+
+### Optional measurement during processing
+
+Set `output.measure_scene_enl: true` and each scene is measured once while its
+raster is open, adding three columns.
+
+| Column | Meaning |
+| --- | --- |
+| `scene_enl` | Equivalent number of looks, estimated from the scene's most homogeneous regions |
+| `scene_enl_homogeneous_fraction` | Share of sampled blocks consistent with that ENL; low values mean the estimate is a lower bound |
+| `correlation_inflation` | Variance inflation factor of the spatial autocorrelation, written as `kappa` below |
+
+This is off by default because the pixel output is complete without it and the
+same estimators are available as library functions. The one thing it offers
+that cannot be reproduced afterwards is `correlation_inflation`, because
+measuring inter-pixel correlation needs contiguous raster, and the written table
+retains only polygon interiors.
+
+ENL is measured per scene rather than per polygon on purpose. It is a property
+of the sensor and the processing chain, so a per-polygon estimate would absorb
+that polygon's own spatial structure and report texture under the name of a
+look count.
+
+### Applying it yourself
+
+The library exposes each piece, so you can aggregate on whatever basis suits the
+analysis: whole polygons, sub-polygon zones, pixel neighbourhoods, or temporal
+windows.
+
+```python
+from sarpanel import radiometry as rad
+
+# One scene, measured from a 2-D linear-power array
+scene = rad.estimate_scene_enl(vv_array)        # {'enl': ..., 'homogeneous_fraction': ...}
+kappa = rad.autocorrelation_inflation_factor(vv_array)
+
+# One polygon on one date, from its pixel values
+summary = rad.aggregate_polygon(
+    pixels_linear,
+    enl=scene["enl"],
+    inflation_factor=kappa,
+)
+# -> mean_linear, mean_db, n_pixels, n_effective, cv, texture_cv, se_db
+```
+
+Or assemble it from the parts:
+
+```python
+cv       = rad.coefficient_of_variation(pixels_linear)
+texture  = rad.texture_cv(cv, enl)                       # speckle removed
+n_eff    = rad.effective_sample_size(len(pixels_linear), kappa)
+se_db    = rad.speckle_standard_error_db(n_eff, enl)
+```
+
+Two points worth knowing before using these.
+
+**Aggregate in linear power, not decibels.** Averaging `VV_db` is biased low,
+and the bias grows with within-polygon heterogeneity, so it is correlated with
+whatever spatial signal you are trying to measure. Both columns are written;
+only one is correct for a mean. `aggregate_polygon` and `mean_linear_then_db`
+handle this.
+
+**Pass an independent sample count to the standard error, not a pixel count.**
+Interpolation during terrain correction raises per-pixel ENL by averaging
+neighbours, but it creates no information, because those neighbours are now
+correlated. Using the raw pixel count credits the variance reduction while
+ignoring the correlation that produced it, which understates the error by the
+square root of `kappa`. After bilinear resampling onto a finer grid that is a
+factor of about two. `effective_sample_size` converts.
+
+### Separating texture from speckle
+
+An observed coefficient of variation mixes speckle with real spatial structure.
+Given the scene ENL they separate under the standard multiplicative model, and
+`texture_cv` performs the inversion. The result is comparable across polygons of
+different sizes and across scenes processed with different look counts, which
+the raw CV is not, since fewer looks inflate every polygon's CV at once.
+
+### References
+
+Oliver, C. and Quegan, S. (2004). *Understanding Synthetic Aperture Radar
+Images*. SciTech Publishing.
+
+Anfinsen, S. N., Doulgeris, A. P. and Eltoft, T. (2009). Estimation of the
+equivalent number of looks in polarimetric synthetic aperture radar imagery.
+*IEEE Transactions on Geoscience and Remote Sensing*, 47(11), 3795-3809.
 
 ## Choices that change the result
 
@@ -550,7 +740,7 @@ token authentication is broken.
 
 | What you see | What to check |
 |---|---|
-| `environment.yml` not found, or pip says no `pyproject.toml` | Change into the cloned repository, not the folder containing only your notebooks or field data. |
+| `environment.yml` not found, or pip says no `pyproject.toml` | Change into the cloned repository, not the folder containing only your notebooks or input data. |
 | A long `Solving environment` step | Use `--solver libmamba -v` to see progress. The first solve can take time. If it stops progressing, save the output before interrupting; avoid concurrent installs. |
 | An unknown `libmamba` solver | Check your conda installation against the current conda documentation; the environment-creation command requires that solver to be available. |
 | Versions or warnings coming from base Anaconda | Use `conda run -n sarpanel python ...` for both installation and execution; verify `sys.executable` before installing more packages. |
@@ -573,11 +763,21 @@ token authentication is broken.
 
 ## Authors
 
-`sarpanel` is developed by **Dev Jyoti Ghosh Arnab** and **Ryan Jayne**.
+`sarpanel` is written and maintained by **Ryan Jayne**
+([ORCID 0009-0001-4662-9686](https://orcid.org/0009-0001-4662-9686)), with
+contributions from **Dev Jyoti Ghosh Arnab**.
 
-The package is a joint effort to turn a Sentinel-1 processing workflow into an
-installable tool: search, SNAP processing, and pixel-level tables with
-spatial coordinates and acquisition geometry retained.
+It grew out of SAR-based agricultural and land-use research, but the design is
+deliberately domain-neutral: the package knows about radar geometry and
+radiometry, and nothing about what the polygons handed to it represent. Issues
+and pull requests are welcome, including from fields it was not originally
+built for.
+
+### Citation
+
+If you use `sarpanel`, please cite it. `CITATION.cff` in the repository root
+carries the machine-readable version, which GitHub renders as a "Cite this
+repository" link.
 
 ## License
 

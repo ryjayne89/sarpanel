@@ -4,7 +4,7 @@ Area-of-interest handling.
 An AOI set is always represented internally as a GeoDataFrame with a stable
 string column ``aoi_id`` and a polygon geometry in EPSG:4326. Everything
 downstream (search footprint, pixel extraction, output partitioning) keys off
-``aoi_id``, so a run over one field and a run over 300,000 fields differ only in
+``aoi_id``, so a run over one polygon and a run over 300,000 differ only in
 the number of rows.
 
 Accepted inputs
@@ -147,8 +147,11 @@ def load_aoi(
         string, a shapely geometry, or a GeoDataFrame.
     id_column
         Column to use as the stable AOI identifier. If omitted, the first of
-        ``aoi_id``, ``farm_name``, ``field_id``, ``id``, ``name`` present is
-        used; failing that, sequential identifiers are generated.
+        ``aoi_id``, ``id``, ``name``, ``label``, ``site_id``, ``plot_id``,
+        ``field_id``, ``farm_name`` present is used; failing that, sequential
+        identifiers are generated. The list is a convenience for column names
+        that common vector sources happen to use, not a requirement about what
+        the polygons represent.
     min_area_m2
         Drop polygons smaller than this, measured in a projected CRS. Useful
         because sub-pixel polygons produce empty extractions and waste a
@@ -228,7 +231,21 @@ def _resolve_id_column(gdf: gpd.GeoDataFrame, id_column: str | None) -> str:
                 f"Available: {sorted(c for c in gdf.columns if c != 'geometry')}"
             )
         return id_column
-    for candidate in ("aoi_id", "farm_name", "field_id", "field_name", "id", "name"):
+    # Generic names first, then identifiers that particular data sources
+    # conventionally use. Any polygon attribute works; pass id_column to choose.
+    for candidate in (
+        "aoi_id",
+        "id",
+        "name",
+        "label",
+        "site_id",
+        "plot_id",
+        "parcel_id",
+        "stand_id",
+        "field_id",
+        "field_name",
+        "farm_name",
+    ):
         if candidate in gdf.columns:
             log.info("Using %r as the AOI identifier column", candidate)
             return candidate

@@ -50,6 +50,17 @@ class OutputConfig:
     compression: str = "zstd"
     partition_by_date: bool = True
 
+    # Optionally measure the scene's equivalent number of looks and its
+    # inter-pixel correlation during processing, and record both on every row.
+    #
+    # Off by default. The pixel output is complete without it, and the
+    # radiometry module exposes the same estimators so they can be applied
+    # afterwards on whatever basis suits the analysis. Turning it on is useful
+    # when the measurement is wanted at the moment the full raster is open,
+    # because the inter-pixel correlation cannot be recovered from the written
+    # pixel table once only polygon interiors remain.
+    measure_scene_enl: bool = False
+
 
 @dataclass
 class RunConfig:

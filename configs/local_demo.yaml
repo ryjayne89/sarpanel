@@ -38,4 +38,15 @@ processing:
 output:
   root: "./runs/local_demo_wide"
 
+  # Optional. Measures each scene's equivalent number of looks and its
+  # inter-pixel correlation while the raster is open, and records both on every
+  # row as scene_enl and correlation_inflation.
+  #
+  # Off by default: the pixel output is complete without it, and
+  # sarpanel.radiometry exposes the same estimators to apply afterwards. Turn it
+  # on if you want the measurement taken during processing, which is the only
+  # way to get correlation_inflation, since that needs contiguous raster rather
+  # than the polygon interiors the written table keeps.
+  # measure_scene_enl: true
+
 n_shards: 1

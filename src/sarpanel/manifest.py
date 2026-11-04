@@ -13,7 +13,7 @@ silently process the same scene twice or skip one entirely, and the failure is
 invisible because every task reports success.
 
 The manifest also records which AOIs each scene actually intersects. For a
-sparse AOI set this is a large saving: a scene that touches four fields should
+sparse AOI set this is a large saving: a scene that touches four polygons should
 not trigger a full-scene read against three hundred thousand polygons.
 """
 

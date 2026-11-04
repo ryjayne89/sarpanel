@@ -46,6 +46,14 @@ class SceneContext:
     product_type: str
     looks: dict
 
+    # Measured once per scene, because the equivalent number of looks and the
+    # inter-pixel correlation are properties of the sensor and the processing
+    # chain rather than of any one polygon. Estimating them per polygon would
+    # instead measure that polygon's texture. See radiometry.estimate_scene_enl.
+    scene_enl: float | None = None
+    scene_enl_homogeneous_fraction: float | None = None
+    correlation_inflation: float | None = None
+
     def as_row_fields(self) -> dict:
         out = {
             "scene_id": self.scene_id,
@@ -65,6 +73,14 @@ class SceneContext:
                 "looks_azimuth": self.looks.get("looks_azimuth"),
             }
         )
+        # Only present when the optional scene measurement ran. Omitted rather
+        # than written as nulls, so the schema says whether the measurement was
+        # taken instead of leaving a column that could be mistaken for a
+        # failed estimate.
+        if self.scene_enl is not None:
+            out["scene_enl"] = self.scene_enl
+            out["scene_enl_homogeneous_fraction"] = self.scene_enl_homogeneous_fraction
+            out["correlation_inflation"] = self.correlation_inflation
         return out
 
 
@@ -159,6 +175,115 @@ class SceneReader:
 
 def _transforms_close(a, b, tol: float = 1e-6) -> bool:
     return all(abs(x - y) < tol for x, y in zip(a[:6], b[:6]))
+
+
+def measure_scene_radiometry(
+    reader: SceneReader,
+    polarization: str | None = None,
+    n_patches: int = 12,
+    patch: int = 256,
+) -> dict[str, float]:
+    """
+    Measure the equivalent number of looks and inter-pixel correlation of a scene.
+
+    Both quantities describe the sensor and the processing chain, so they are
+    measured once from the raster rather than per polygon. Measuring them per
+    polygon would conflate them with that polygon's own spatial structure, and
+    the correlation in particular cannot be seen at all from polygon interiors
+    alone once the pixels have been written out as a table.
+
+    Patches are sampled on a coarse grid across the scene instead of using the
+    whole raster, because the estimators need only enough homogeneous area to
+    locate the look count, and reading a full Sentinel-1 scene to do it would
+    cost more memory than the rest of extraction combined.
+
+    Parameters
+    ----------
+    reader
+        An open :class:`SceneReader`.
+    polarization
+        Which band to measure. Defaults to the first available, normally VV,
+        which is preferred over VH because it sits further above the noise floor
+        and so reflects the processing chain rather than thermal noise.
+    n_patches
+        Number of patches to sample. Estimates are pooled across patches.
+    patch
+        Patch side length in pixels.
+
+    Returns
+    -------
+    dict
+        ``scene_enl``, ``scene_enl_homogeneous_fraction`` and
+        ``correlation_inflation``. Values are NaN when the scene offers too
+        little valid data to measure, which is reported rather than silently
+        replaced with a default.
+    """
+    pols = reader.polarizations
+    if not pols:
+        return {
+            "scene_enl": float("nan"),
+            "scene_enl_homogeneous_fraction": float("nan"),
+            "correlation_inflation": float("nan"),
+        }
+    band = f"bs_{(polarization or pols[0]).upper()}"
+
+    height, width = reader.shape
+    side = min(patch, height, width)
+    per_axis = max(1, int(np.ceil(np.sqrt(n_patches))))
+
+    enl_values: list[float] = []
+    homogeneous: list[float] = []
+    kappa_values: list[float] = []
+
+    for i in range(per_axis):
+        for j in range(per_axis):
+            # Space the patches across the interior, away from the swath edges
+            # where border noise and incomplete coverage distort the statistics.
+            row = int((i + 1) * height / (per_axis + 1)) - side // 2
+            col = int((j + 1) * width / (per_axis + 1)) - side // 2
+            row = max(0, min(row, height - side))
+            col = max(0, min(col, width - side))
+
+            arr = reader.read_window(
+                band, Window(col_off=col, row_off=row, width=side, height=side)
+            )
+            if arr is None:
+                continue
+            arr = np.asarray(arr, dtype=np.float64)
+            if reader.nodata is not None and np.isfinite(reader.nodata):
+                arr = np.where(arr == reader.nodata, np.nan, arr)
+            if np.isfinite(arr).mean() < 0.5:
+                continue
+
+            scene = rad.estimate_scene_enl(arr)
+            if np.isfinite(scene.get("enl", np.nan)):
+                enl_values.append(scene["enl"])
+                homogeneous.append(scene.get("homogeneous_fraction", np.nan))
+
+            kappa = rad.autocorrelation_inflation_factor(arr)
+            if np.isfinite(kappa):
+                kappa_values.append(kappa)
+
+    # The median across patches resists a single patch that happened to land on
+    # water, a built-up area or a scene edge.
+    result = {
+        "scene_enl": float(np.median(enl_values)) if enl_values else float("nan"),
+        "scene_enl_homogeneous_fraction": (
+            float(np.nanmedian(homogeneous)) if homogeneous else float("nan")
+        ),
+        "correlation_inflation": (
+            float(np.median(kappa_values)) if kappa_values else float("nan")
+        ),
+    }
+    log.info(
+        "Scene radiometry: ENL %.2f (homogeneous fraction %.2f), "
+        "correlation inflation %.2f from %d patch(es)",
+        result["scene_enl"],
+        result["scene_enl_homogeneous_fraction"],
+        result["correlation_inflation"],
+        len(enl_values),
+    )
+    return result
 
 
 def polygon_window(geometry, reader: SceneReader, pad: int = 1) -> Window | None:

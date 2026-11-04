@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "sarpanel: Sentinel-1 pixel time series over arbitrary polygons"
+abstract: >-
+  sarpanel produces analysis-ready Sentinel-1 pixel time series over any set of
+  polygons. Given polygons and a date range it searches the Alaska Satellite
+  Facility archive, processes matching scenes with ESA SNAP through pyroSAR, and
+  writes pixel-level Parquet in which every row carries the acquisition geometry
+  that produced it, including the projected local incidence angle, the orbit
+  track, and the layover and shadow mask. Both SLC and GRD input are supported.
+  Polygons define where to extract rather than what to average, so within-polygon
+  spatial structure is preserved.
+type: software
+authors:
+  - family-names: Jayne
+    given-names: Ryan
+    orcid: "https://orcid.org/0009-0001-4662-9686"
+  - family-names: Ghosh Arnab
+    given-names: Dev Jyoti
+repository-code: "https://github.com/ryjayne89/sarpanel"
+license: MIT
+version: 0.1.0
+date-released: "2026-11-03"
+keywords:
+  - SAR
+  - Sentinel-1
+  - synthetic aperture radar
+  - remote sensing
+  - time series
+  - geospatial
+  - pyroSAR
+  - ESA SNAP

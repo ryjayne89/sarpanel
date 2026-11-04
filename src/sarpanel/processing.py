@@ -535,7 +535,7 @@ def _simplify_for_snap(geom, max_vertices: int):
     Over-covering is the safe direction. SNAP subsets to a region and the
     extraction step masks to the true polygons afterwards, so a generous subset
     costs some compute but cannot lose data. An under-covering subset would
-    silently clip fields.
+    silently clip polygons.
     """
     if _vertex_count(geom) <= max_vertices:
         return geom

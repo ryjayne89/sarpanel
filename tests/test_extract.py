@@ -279,3 +279,80 @@ def test_nodata_pixels_are_excluded(tmp_path, context):
     # 40x40 window, but the left 30 columns are nodata -> 40 rows x 10 cols
     assert len(df) == 400
     assert df["VV_linear"].eq(1).all()
+
+
+# ---------------------------------------------------------------------------
+# optional scene radiometry measurement
+# ---------------------------------------------------------------------------
+
+
+def _context(**extra):
+    from sarpanel import radiometry as rad
+    from sarpanel.extract import SceneContext
+
+    base = dict(
+        scene_id="S1B_TEST",
+        acquisition_date="2020-06-08",
+        start_time="2020-06-08T23:31:49Z",
+        platform="Sentinel-1B",
+        orbit_direction="ASCENDING",
+        relative_orbit=48,
+        absolute_orbit=21949,
+        frame_number=500,
+        product_type="SLC",
+        looks=rad.nominal_looks(10.0, "SLC"),
+    )
+    base.update(extra)
+    return SceneContext(**base)
+
+
+def test_scene_enl_columns_absent_unless_measured():
+    """
+    Writing them as nulls would be worse than omitting them, because a null is
+    indistinguishable from a measurement that was attempted and failed.
+    """
+    fields = _context().as_row_fields()
+    assert "scene_enl" not in fields
+    assert "correlation_inflation" not in fields
+    assert "looks_nominal" in fields, "the processing parameters are always recorded"
+
+
+def test_scene_enl_columns_present_once_measured():
+    fields = _context(
+        scene_enl=4.1,
+        scene_enl_homogeneous_fraction=0.72,
+        correlation_inflation=3.2,
+    ).as_row_fields()
+    assert fields["scene_enl"] == 4.1
+    assert fields["scene_enl_homogeneous_fraction"] == 0.72
+    assert fields["correlation_inflation"] == 3.2
+
+
+def test_measure_scene_radiometry_reads_a_synthetic_scene(tmp_path):
+    """
+    End to end through SceneReader on imagery with a known look count, to
+    confirm the opt-in path returns usable numbers rather than NaN.
+    """
+    import numpy as np
+
+    from sarpanel.extract import SceneReader, measure_scene_radiometry
+
+    rng = np.random.default_rng(5)
+    looks = 4.4
+    n = 400
+    vv = rng.gamma(looks, 1.0 / looks, size=(n, n)).astype("float32")
+    vh = (vv * 0.2).astype("float32")
+    inc = np.full((n, n), 38.0, dtype="float32")
+
+    bands = {
+        "backscatter": {
+            "VV": write_band(tmp_path / "vv.tif", vv),
+            "VH": write_band(tmp_path / "vh.tif", vh),
+        },
+        "inc_angle_projected": write_band(tmp_path / "inc.tif", inc),
+    }
+    with SceneReader(bands) as reader:
+        measured = measure_scene_radiometry(reader, n_patches=4, patch=128)
+
+    assert measured["scene_enl"] == pytest.approx(looks, rel=0.15)
+    assert measured["correlation_inflation"] == pytest.approx(1.0, abs=0.2)

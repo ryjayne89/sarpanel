@@ -23,7 +23,12 @@ import pandas as pd
 
 from . import radiometry as rad
 from .aoi import AOISet
-from .extract import SceneContext, SceneReader, extract_scene
+from .extract import (
+    SceneContext,
+    SceneReader,
+    extract_scene,
+    measure_scene_radiometry,
+)
 from .processing import (
     GeocodeCapabilities,
     geocode_scene,
@@ -186,6 +191,20 @@ def process_scene(
             if reader.crs != CRS.from_user_input(config.processing.target_crs):
                 raise ValueError("SNAP output CRS differs from processing.target_crs")
             validate_pixel_grid(reader.transform, config.processing.target_spacing_m)
+
+            # Opt-in. When enabled, measured once per scene before any polygon
+            # is touched, because the look count and the inter-pixel
+            # correlation belong to the imagery rather than to the polygons
+            # drawn on it. Left off, the columns are absent and the same
+            # estimators remain available in sarpanel.radiometry.
+            if config.output.measure_scene_enl:
+                measured = measure_scene_radiometry(reader)
+                context.scene_enl = measured["scene_enl"]
+                context.scene_enl_homogeneous_fraction = measured[
+                    "scene_enl_homogeneous_fraction"
+                ]
+                context.correlation_inflation = measured["correlation_inflation"]
+
             df = extract_scene(
                 reader=reader,
                 aoi=aoi,
