@@ -15,8 +15,8 @@ authors:
   - family-names: Jayne
     given-names: Ryan
     orcid: "https://orcid.org/0009-0001-4662-9686"
-  - family-names: Ghosh Arnab
-    given-names: Dev Jyoti
+  - family-names: Arnab
+    given-names: Dev Jyoti Ghosh
 repository-code: "https://github.com/ryjayne89/sarpanel"
 license: MIT
 version: 0.1.0
