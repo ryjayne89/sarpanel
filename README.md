@@ -1,13 +1,13 @@
 # sarpanel
 
-Analysis-ready **Sentinel-1 pixel time series**, written to **Parquet**,
+Analysis-ready Sentinel-1 pixel time series, written to Parquet,
 with spatial coordinates, backscatter, and acquisition geometry retained.
 
 Give the program an area of interest (one polygon or many) and a date range.
 It queries the Alaska Satellite Facility (ASF) archive, processes matching
 Sentinel-1 scenes with [ESA SNAP](https://step.esa.int/main/toolboxes/snap/)
 through [pyroSAR](https://github.com/johntruckenbrodt/pyroSAR), and writes
-**one row per pixel per AOI, with dated columns for each acquisition**.
+one row per pixel per AOI, with dated columns for each acquisition.
 Each scene file contains that scene's pixel measurements; `aggregate` joins
 acquisitions side by side on the pixel coordinates. Polygons identify the area
 to extract. They are never averaged into one row.
@@ -56,30 +56,26 @@ you to sample it, which is where acquisition metadata usually gets discarded.
 `sarpanel` ends at a table instead, and every row keeps the conditions it was
 measured under.
 
-- **Per-pixel coordinates on a fixed, snapped grid**, so a pixel is the same
+- Per-pixel coordinates on a fixed, snapped grid, so a pixel is the same
   pixel across years and the time series is a real panel rather than a stack of
   near-misses.
-- **Projected local incidence angle per acquisition**, taken from the
+- Projected local incidence angle per acquisition, taken from the
   terrain-correction output band rather than interpolated from tie points.
   Backscatter depends on viewing angle, and observations from different orbit
   tracks arrive at angles that can differ by 9 degrees or more, so an analysis
   that ignores this is fitting geometry as if it were signal.
-- **Orbit track, platform, and timing**, so observations can be conditioned on
+- Orbit track, platform, and timing, so observations can be conditioned on
   viewing geometry instead of pooled blindly.
-- **Layover and shadow masks**, which mark pixels that are not measurements at
+- Layover and shadow masks, which mark pixels that are not measurements at
   all.
-- **The pieces needed to quantify precision**, covered under
+- The pieces needed to quantify precision, covered under
   [Looks, speckle, and precision](#looks-speckle-and-precision). Polygon size
   and processing history determine how reliable an estimate is, and the package
   records what is needed to weight observations accordingly rather than treating
   them as equally informative.
-- **Provenance in every file**, including software versions, the DEM used, and
+- Provenance in every file, including software versions, the DEM used, and
   the full run configuration, so a result stays traceable after the file leaves
   the directory it was written in.
-- **No averaging inside polygons.** Polygons say where to extract, not what to
-  collapse, so within-polygon spatial structure survives for sub-polygon
-  analysis. Aggregate later if you want to, with the tools in
-  `sarpanel.radiometry`.
 
 ### Scale it has been run at
 
@@ -95,7 +91,7 @@ Polygon-summary output has been removed.
 
 ## Start here: use a terminal
 
-**Jupyter is optional.** Installation, catalog searches, downloads, SNAP
+Jupyter is optional. Installation, catalog searches, downloads, SNAP
 processing, status checks, and aggregation all run from a terminal. You can
 inspect the final Parquet table in a notebook later.
 
@@ -124,7 +120,7 @@ The workflow is:
 | ESA SNAP and its Microwave Toolbox | Perform the radar processing through `gpt` | Separate application installer |
 | NASA Earthdata account | Authorize satellite-data downloads | Free account and token; not a software package |
 
-**Do not install ASF Search or pyroSAR again after the environment is created.**
+Do not install ASF Search or pyroSAR again after the environment is created.
 The dependency imports are checked below.
 
 ## 1. Clone the repository and create the environment
@@ -187,13 +183,13 @@ The examples below keep the explicit environment selection throughout.
 
 ## 3. Install ESA SNAP separately
 
-Creating the conda environment installs pyroSAR, **not SNAP**. pyroSAR builds
+Creating the conda environment installs pyroSAR, not SNAP. pyroSAR builds
 processing graphs; SNAP's `gpt` executable actually processes the scenes.
 
 1. Open the [official SNAP download page](https://step.esa.int/main/download/snap-download/).
-2. Download **Sentinel Toolboxes** for your operating system. On Windows, choose
-   **Windows 64-Bit**.
-3. Run the installer and keep the **Microwave Toolbox** selected.
+2. Download Sentinel Toolboxes for your operating system. On Windows, choose
+   Windows 64-Bit.
+3. Run the installer and keep the Microwave Toolbox selected.
 4. Note the installation directory. It must contain `bin\gpt.exe` on Windows
    or `bin/gpt` on Linux.
 
@@ -220,7 +216,7 @@ These settings apply to the current terminal and its child processes. Set them
 again in each new terminal unless you have configured them persistently.
 Keep using this terminal for the remaining steps.
 
-**Known Windows diagnostic issue:** the current `doctor` command checks
+Known Windows diagnostic issue: the current `doctor` command checks
 `bin/gpt` and can report it missing even when `bin\gpt.exe` exists. If the
 PowerShell checks above succeed, that message alone does not mean SNAP is
 missing.
@@ -231,7 +227,7 @@ Searching the ASF catalog is public. Downloading scenes requires a free
 [NASA Earthdata account](https://urs.earthdata.nasa.gov/).
 
 1. Register or sign in and generate a token from your profile.
-2. Authorize **Alaska Satellite Facility Data Access**. If an error says
+2. Authorize Alaska Satellite Facility Data Access. If an error says
    `Pre authorization required`, follow its `resolution_url` or the
    Earthdata account's application-authorization instructions.
 3. Set the token in the same terminal where `gpt -h` worked.
@@ -271,7 +267,7 @@ files do not reliably map to Windows permissions.
 
 ## 5. Choose and edit your YAML configuration
 
-**The YAML file tells sarpanel where, when, and how to process data.** Installing
+The YAML file tells sarpanel where, when, and how to process data. Installing
 the software does not select your own study area or dates.
 
 For the first installation check, you can leave `configs/local_demo.yaml`
@@ -325,8 +321,8 @@ n_shards: 1
 | `output.root` | Choose a new result directory for each different area, date range, or processing configuration. |
 | `n_shards` | Keep `1` on a laptop and run `--shard 0`. |
 
-For bounding boxes, the order is **minimum longitude, minimum latitude,
-maximum longitude, maximum latitude**. West and south come first. Use negative
+For bounding boxes, the order is minimum longitude, minimum latitude,
+maximum longitude, maximum latitude. West and south come first. Use negative
 longitude west of Greenwich and negative latitude south of the equator.
 `aoi.source` bounding-box coordinates are always in EPSG:4326, even though
 `processing.target_crs` is projected.
@@ -356,7 +352,7 @@ All relative input and output paths are resolved from the directory where you
 run the command, not from the YAML file's directory. Run from the repository
 root consistently, or use absolute paths.
 
-**After editing a configuration, run `plan` again.** Workers use the manifest
+After editing a configuration, run `plan` again. Workers use the manifest
 written by `plan`; editing the dates or coordinates alone does not refresh it.
 Use a new `name` and `output.root` for a changed study so old scene outputs are
 not mistaken for completed results. Keep the configuration unchanged while a
@@ -374,7 +370,7 @@ settings and Earthdata token. For the unchanged demo:
 conda run --no-capture-output -n sarpanel python -m sarpanel.cli plan configs/local_demo.yaml
 ```
 
-Read the **scene count and download size** before continuing. One tested query
+Read the scene count and download size before continuing. One tested query
 for this demo returned 4 scenes and about 4 GB. Results and sizes depend on the
 configuration and catalog. Planning writes metadata; it does not download the
 satellite archives.
@@ -404,8 +400,8 @@ conda run --no-capture-output -n sarpanel python -m sarpanel.cli status configs/
 conda run --no-capture-output -n sarpanel python -m sarpanel.cli aggregate configs/local_demo.yaml
 ```
 
-For your own study, replace **`configs/local_demo.yaml` with
-`configs/my_run.yaml` in every command**: plan, run, status, and aggregate.
+For your own study, replace `configs/local_demo.yaml` with
+`configs/my_run.yaml` in every command: plan, run, status, and aggregate.
 Do not plan one configuration and run another.
 
 Outputs for the demo land in:
@@ -452,7 +448,7 @@ conda run --no-capture-output -n sarpanel python -m ipykernel install --user --n
 conda run --no-capture-output -n sarpanel jupyter lab
 ```
 
-Select **Python (sarpanel)** in the notebook's kernel menu. Confirm the
+Select Python (sarpanel) in the notebook's kernel menu. Confirm the
 interpreter before importing project packages:
 
 ```python
@@ -568,7 +564,7 @@ runner and aggregation checks. Legacy `output.granularity: pixel` is accepted
 when reading an old YAML, but it is no longer a selectable output mode.
 `output.granularity: polygon` raises an error.
 
-The demo now writes to **`runs/local_demo_wide/`**, preserving older
+The demo now writes to `runs/local_demo_wide/`, preserving older
 `runs/local_demo/` and `runs/local_demo_pixel/` results. After updating, rerun
 `plan`, then `run`, using `configs/local_demo.yaml`; finally run `aggregate`
 to join dates across columns. This may redownload scenes and run SNAP again,
