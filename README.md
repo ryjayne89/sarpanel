@@ -3,14 +3,13 @@
 Sentinel-1 pixel time series, written to Parquet, with spatial coordinates,
 backscatter, and acquisition geometry kept intact.
 
-You give it an area of interest, either one polygon or many, plus a date range.
+Provide an area of interest, either one polygon or multipolygon, plus a date range.
 It searches the Alaska Satellite Facility (ASF) archive, processes the matching
 Sentinel-1 scenes with [ESA SNAP](https://step.esa.int/main/toolboxes/snap/)
 through [pyroSAR](https://github.com/johntruckenbrodt/pyroSAR), and writes one
-row per pixel per AOI with dated columns for each acquisition. Each scene gets
+row per pixel within the AOI with dated columns for each acquisition. Each scene gets
 its own file, and `aggregate` joins the acquisitions side by side on the pixel
-coordinates. Polygons say where to extract. They never get averaged into one
-row.
+coordinates. 
 
 The polygons can be anything with a boundary. Nothing downstream looks at what
 a polygon is supposed to represent, so a run over one polygon and a run over
@@ -20,7 +19,7 @@ GeoPandas can read, a WKT string, a bounding box written as
 
 ## What this is for
 
-Sentinel-1 has imaged the whole land surface every 6 to 12 days since 2014,
+Sentinel-1 has imaged nearly the whole land surface every 6 to 12 days since 2014,
 through cloud and at night, and the archive is free. Getting the data has never
 been the hard part. The hard part is turning a decade of radar scenes into a
 table you can model. That takes a working SNAP install, a catalog search that
