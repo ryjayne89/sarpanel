@@ -762,7 +762,7 @@ broken.
 
 sarpanel is written and maintained by Ryan Jayne
 ([ORCID 0009-0001-4662-9686](https://orcid.org/0009-0001-4662-9686)), with
-contributions from Dev Jyoti Ghosh Arnab.
+contributions from [Dev Jyoti Ghosh Arnab](https://www.linkedin.com/in/dev-arnab/).
 
 It came out of SAR-based agricultural and land-use research, but the design is
 deliberately domain-neutral. The package knows about radar geometry and
